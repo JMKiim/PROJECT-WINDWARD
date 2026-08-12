@@ -1,4 +1,4 @@
-[gd_scene load_steps=39 format=3]
+[gd_scene load_steps=40 format=3]
 
 [ext_resource type="Script" path="res://src/boat/boat_controller.gd" id="1_controller"]
 [ext_resource type="Script" path="res://src/boat/ilca_hull.gd" id="2_hull"]
@@ -8,9 +8,10 @@
 [ext_resource type="Script" path="res://src/boat/sailor.gd" id="6_sailor"]
 [ext_resource type="Texture2D" path="res://src/boat/ilca7_mark.svg" id="7_class_mark"]
 [ext_resource type="Script" path="res://src/boat/ilca_hardware_part.gd" id="8_hardware"]
+[ext_resource type="Texture2D" path="res://src/boat/ilca_hull_mark.svg" id="9_hull_mark"]
 
 [sub_resource type="BoxShape3D" id="HullCollision"]
-size = Vector3(1.37, 0.52, 4.23)
+size = Vector3(1.37, 0.42, 4.23)
 
 [sub_resource type="StandardMaterial3D" id="MastAluminumMaterial"]
 albedo_color = Color(0.56, 0.585, 0.595, 1)
@@ -148,7 +149,7 @@ size = Vector2(0.07, 0.07)
 script = ExtResource("1_controller")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
-position = Vector3(0, 0.08, 0)
+position = Vector3(0, 0.14, 0)
 shape = SubResource("HullCollision")
 
 [node name="Hull" type="MeshInstance3D" parent="."]
@@ -219,45 +220,45 @@ mesh = SubResource("HikingStrapMesh")
 material_override = SubResource("DeckHardwareMaterial")
 
 [node name="PortCockpitRail" type="MeshInstance3D" parent="."]
-position = Vector3(-0.47, 0.35, 0.52)
+position = Vector3(-0.47, 0.316, 0.52)
 script = ExtResource("8_hardware")
 part_kind = 7
 
 [node name="StarboardCockpitRail" type="MeshInstance3D" parent="."]
-position = Vector3(0.47, 0.35, 0.52)
+position = Vector3(0.47, 0.316, 0.52)
 script = ExtResource("8_hardware")
 part_kind = 7
 
 [node name="ControlPlate" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.385, -0.50)
+position = Vector3(0, 0.350, -0.50)
 mesh = SubResource("ControlPlateMesh")
 material_override = SubResource("StainlessHardwareMaterial")
 
 [node name="PortControlCleat" type="MeshInstance3D" parent="."]
-position = Vector3(-0.065, 0.395, -0.50)
+position = Vector3(-0.065, 0.360, -0.50)
 rotation_degrees = Vector3(0, -8, 0)
 script = ExtResource("8_hardware")
 part_kind = 8
 
 [node name="StarboardControlCleat" type="MeshInstance3D" parent="."]
-position = Vector3(0.065, 0.395, -0.50)
+position = Vector3(0.065, 0.360, -0.50)
 rotation_degrees = Vector3(0, 8, 0)
 script = ExtResource("8_hardware")
 part_kind = 8
 
 [node name="DeckBlockPlate" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.385, -0.65)
+position = Vector3(0, 0.350, -0.65)
 mesh = SubResource("DeckBlockPlateMesh")
 material_override = SubResource("StainlessHardwareMaterial")
 
 [node name="PortDeckBlock" type="MeshInstance3D" parent="."]
-position = Vector3(-0.055, 0.42, -0.65)
+position = Vector3(-0.055, 0.385, -0.65)
 rotation_degrees = Vector3(0, -12, 90)
 script = ExtResource("8_hardware")
 part_kind = 3
 
 [node name="StarboardDeckBlock" type="MeshInstance3D" parent="."]
-position = Vector3(0.055, 0.42, -0.65)
+position = Vector3(0.055, 0.385, -0.65)
 rotation_degrees = Vector3(0, 12, 90)
 script = ExtResource("8_hardware")
 part_kind = 3
@@ -278,19 +279,19 @@ script = ExtResource("8_hardware")
 part_kind = 4
 
 [node name="TravellerBlock" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.36, 1.46)
+position = Vector3(0, 0.332, 1.46)
 rotation_degrees = Vector3(0, 0, 90)
 script = ExtResource("8_hardware")
 part_kind = 2
 
 [node name="PortTravellerFairlead" type="MeshInstance3D" parent="."]
-position = Vector3(-0.46, 0.32, 1.54)
+position = Vector3(-0.46, 0.292, 1.54)
 rotation_degrees = Vector3(0, 90, 0)
 script = ExtResource("8_hardware")
 part_kind = 10
 
 [node name="StarboardTravellerFairlead" type="MeshInstance3D" parent="."]
-position = Vector3(0.46, 0.32, 1.54)
+position = Vector3(0.46, 0.292, 1.54)
 rotation_degrees = Vector3(0, 90, 0)
 script = ExtResource("8_hardware")
 part_kind = 10
@@ -318,13 +319,29 @@ rotation_degrees = Vector3(90, 0, 0)
 mesh = SubResource("CockpitDrainMesh")
 material_override = SubResource("DeckHardwareMaterial")
 
+[node name="PortHullMark" type="Sprite3D" parent="."]
+position = Vector3(-0.569, 0.222, 1.72)
+rotation_degrees = Vector3(0, -90, 0)
+pixel_size = 0.00022
+texture = ExtResource("9_hull_mark")
+double_sided = false
+cast_shadow = 0
+
+[node name="StarboardHullMark" type="Sprite3D" parent="."]
+position = Vector3(0.569, 0.222, 1.72)
+rotation_degrees = Vector3(0, 90, 0)
+pixel_size = 0.00022
+texture = ExtResource("9_hull_mark")
+double_sided = false
+cast_shadow = 0
+
 [node name="LowerMast" type="MeshInstance3D" parent="."]
 position = Vector3(0, 1.7725, -0.81)
 mesh = SubResource("LowerMastMesh")
 material_override = SubResource("MastAluminumMaterial")
 
 [node name="MastCollar" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.372, -0.81)
+position = Vector3(0, 0.344, -0.81)
 mesh = SubResource("MastCollarMesh")
 material_override = SubResource("DeckHardwareMaterial")
 

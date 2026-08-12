@@ -9,6 +9,21 @@ const CLEW_RISE_METERS := 0.04
 const FOOT_ROACH_METERS := 0.11
 const ROWS := 48
 const COLUMNS := 36
+const LOWER_RADIAL_LUFF_HEIGHTS := [0.12, 0.23, 0.34, 0.47]
+# Parametric coordinates always use Vector2(height_ratio, chord_ratio). They
+# are deliberately not mesh UVs, whose axes are (chord, 1 - height).
+const UPPER_RADIAL_ORIGIN_HC := Vector2(0.47, 0.20)
+const UPPER_RADIAL_ENDS_HC := [
+	Vector2(1.0, 0.0),
+	Vector2(0.95, 0.34),
+	Vector2(0.88, 0.62),
+	Vector2(0.74, 1.0),
+]
+const CROSS_SEAMS_HEIGHT_CURVE := [Vector2(0.47, 0.035), Vector2(0.86, 0.025)]
+const BATTEN_ANCHORS_HC := [Vector2(0.27, 0.63), Vector2(0.53, 0.55), Vector2(0.76, 0.42)]
+# Stable semantic surface anchors for the later cloth solver. Telltales remain
+# paired per sail side and will sample local airflow at these same HC points.
+const TELLTALE_ANCHORS_HC := [Vector2(0.31, 0.20), Vector2(0.50, 0.20), Vector2(0.69, 0.20)]
 
 @export_range(0.0, 1.0, 0.01) var outhaul_tension := 0.62
 @export_range(0.0, 1.0, 0.01) var cunningham_tension := 0.55
@@ -68,9 +83,8 @@ func _build_sail_mesh() -> ArrayMesh:
 
 	var battens := SurfaceTool.new()
 	battens.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_add_batten(battens, 0.27, 0.63)
-	_add_batten(battens, 0.53, 0.55)
-	_add_batten(battens, 0.76, 0.42)
+	for batten_anchor in BATTEN_ANCHORS_HC:
+		_add_batten(battens, batten_anchor.x, batten_anchor.y)
 	battens.generate_normals()
 	battens.commit(sail_mesh)
 	sail_mesh.surface_set_material(3, _make_batten_material())
@@ -84,6 +98,13 @@ func _build_sail_mesh() -> ArrayMesh:
 
 
 func _add_sail_quad(surface: SurfaceTool, t0: float, t1: float, u0: float, u1: float) -> void:
+	if is_equal_approx(t1, 1.0):
+		# The head has zero chord. A single fan triangle avoids the collapsed
+		# second triangle produced by a regular quad at this row.
+		_add_sail_vertex(surface, t0, u0)
+		_add_sail_vertex(surface, 1.0, 0.0)
+		_add_sail_vertex(surface, t0, u1)
+		return
 	_add_sail_vertex(surface, t0, u0)
 	_add_sail_vertex(surface, t1, u0)
 	_add_sail_vertex(surface, t1, u1)
@@ -98,6 +119,12 @@ func _add_sail_vertex(surface: SurfaceTool, height_ratio: float, chord_ratio: fl
 
 
 func _sail_point(height_ratio: float, chord_ratio: float) -> Vector3:
+	return sail_surface_point(Vector2(height_ratio, chord_ratio))
+
+
+func sail_surface_point(hc: Vector2) -> Vector3:
+	var height_ratio := clampf(hc.x, 0.0, 1.0)
+	var chord_ratio := clampf(hc.y, 0.0, 1.0)
 	var chord := FOOT_LENGTH_METERS * pow(1.0 - height_ratio, 0.96)
 	var outhaul_shape := lerpf(1.18, 0.62, outhaul_tension)
 	var cunningham_shape := lerpf(1.10, 0.86, cunningham_tension)
@@ -179,20 +206,8 @@ func _add_window_grid(surface: SurfaceTool) -> void:
 	_add_line(surface, _sail_point(_window_bottom(0.0), 0.17), _sail_point(_window_top(0.0), 0.17))
 	_add_line(surface, _sail_point(_window_bottom(1.0), 0.62), _sail_point(_window_top(1.0), 0.62))
 
-	for diagonal_index in range(9):
-		var base_height := -0.055 + float(diagonal_index) * 0.030
-		_add_clipped_window_line(
-			surface,
-			Vector2(base_height, 0.15),
-			Vector2(base_height + 0.18, 0.64),
-			36
-		)
-		_add_clipped_window_line(
-			surface,
-			Vector2(base_height + 0.18, 0.15),
-			Vector2(base_height, 0.64),
-			36
-		)
+	# The transparent film is not a wire lattice. Keep only its sewn outline;
+	# panel reinforcements will be represented by the shared topology pass.
 
 
 func _window_bottom(window_ratio: float) -> float:
@@ -203,47 +218,26 @@ func _window_top(window_ratio: float) -> float:
 	return 0.095 + sin(window_ratio * PI) * 0.050 - window_ratio * 0.008
 
 
-func _add_clipped_window_line(
-	surface: SurfaceTool,
-	from_uv: Vector2,
-	to_uv: Vector2,
-	segments: int
-) -> void:
-	for segment in range(segments):
-		var ratio0 := float(segment) / float(segments)
-		var ratio1 := float(segment + 1) / float(segments)
-		var uv0 := from_uv.lerp(to_uv, ratio0)
-		var uv1 := from_uv.lerp(to_uv, ratio1)
-		if _is_window_panel(uv0.x, uv0.y) and _is_window_panel(uv1.x, uv1.y):
-			_add_line(surface, _sail_point(uv0.x, uv0.y), _sail_point(uv1.x, uv1.y))
-
-
 func _add_bi_radial_panel_lines(surface: SurfaceTool) -> void:
 	# MK2 lower panels fan from the clew, then the upper radial group fans
 	# upward from the broad middle seam.
-	for luff_height in [0.12, 0.23, 0.34, 0.47]:
-		_add_uv_line(surface, Vector2(0.0, 1.0), Vector2(float(luff_height), 0.0), 18)
+	for luff_height in LOWER_RADIAL_LUFF_HEIGHTS:
+		_add_hc_line(surface, Vector2(0.0, 1.0), Vector2(float(luff_height), 0.0), 18)
 
-	var radial_origin := Vector2(0.47, 0.20)
-	for radial_end in [
-		Vector2(1.0, 0.0),
-		Vector2(0.95, 0.34),
-		Vector2(0.88, 0.62),
-		Vector2(0.74, 1.0),
-	]:
-		_add_uv_line(surface, radial_origin, radial_end, 18)
+	for radial_end in UPPER_RADIAL_ENDS_HC:
+		_add_hc_line(surface, UPPER_RADIAL_ORIGIN_HC, radial_end, 18)
 
-	_add_curved_cross_seam(surface, 0.47, 0.035)
-	_add_curved_cross_seam(surface, 0.86, 0.025)
+	for cross_seam in CROSS_SEAMS_HEIGHT_CURVE:
+		_add_curved_cross_seam(surface, cross_seam.x, cross_seam.y)
 
 
-func _add_uv_line(surface: SurfaceTool, from_uv: Vector2, to_uv: Vector2, segments: int) -> void:
+func _add_hc_line(surface: SurfaceTool, from_hc: Vector2, to_hc: Vector2, segments: int) -> void:
 	for segment in range(segments):
 		var ratio0 := float(segment) / float(segments)
 		var ratio1 := float(segment + 1) / float(segments)
-		var uv0 := from_uv.lerp(to_uv, ratio0)
-		var uv1 := from_uv.lerp(to_uv, ratio1)
-		_add_line(surface, _sail_point(uv0.x, uv0.y), _sail_point(uv1.x, uv1.y))
+		var hc0 := from_hc.lerp(to_hc, ratio0)
+		var hc1 := from_hc.lerp(to_hc, ratio1)
+		_add_line(surface, _sail_point(hc0.x, hc0.y), _sail_point(hc1.x, hc1.y))
 
 
 func _add_curved_cross_seam(surface: SurfaceTool, base_height: float, curve: float) -> void:
