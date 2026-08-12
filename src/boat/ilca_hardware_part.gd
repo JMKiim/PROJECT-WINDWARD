@@ -23,6 +23,8 @@ enum PartKind {
 	TRAVELLER_FAIRLEAD,
 	TRAVELLER_CLEAT,
 	RUDDER_GUDGEON,
+	HIKING_STRAP,
+	HIKING_STRAP_PLATE,
 }
 
 @export var part_kind: PartKind = PartKind.DECK_RATCHET
@@ -90,6 +92,9 @@ func rope_anchor_local(anchor_name: StringName = &"sheave") -> Vector3:
 			return Vector3(0.0, 0.028, -0.008)
 		PartKind.GOOSENECK:
 			return Vector3(0.0, 0.0, 0.105)
+		PartKind.HIKING_STRAP:
+			if anchor_name == &"aft_loop":
+				return Vector3(0.0, 0.018, 0.555)
 	return Vector3.ZERO
 
 
@@ -142,6 +147,10 @@ func _ready() -> void:
 			_build_traveller_cleat()
 		PartKind.RUDDER_GUDGEON:
 			_build_rudder_gudgeon()
+		PartKind.HIKING_STRAP:
+			_build_hiking_strap()
+		PartKind.HIKING_STRAP_PLATE:
+			_build_hiking_strap_plate()
 
 
 func _build_block(sheave_radius: float, stand_up: bool, double_sheave: bool) -> void:
@@ -434,20 +443,89 @@ func _build_daggerboard_handle() -> void:
 
 
 func _build_grab_rail() -> void:
-	_add_tube_between("Rail", Vector3(0.0, 0.050, -0.245), Vector3(0.0, 0.050, 0.245), 0.018, _black)
-	for z_offset in [-0.205, 0.205]:
-		_add_tube_between(
-			"ForwardFoot" if z_offset < 0.0 else "AftFoot",
-			Vector3(0.0, 0.006, float(z_offset)),
-			Vector3(0.0, 0.050, float(z_offset)),
-			0.022,
+	# The production ILCA grabrail is a low plastic strip screwed to the upper
+	# inside face of each cockpit wall. It is not an elevated handrail on the
+	# side-deck seating surface. Three joined rail sections and five countersunk
+	# fasteners read like the production multi-piece moulding without recreating
+	# the old elevated bar.
+	var rail_length := 0.82
+	var section_count := 3
+	var section_length := rail_length / float(section_count)
+	for section_index in range(section_count):
+		var section_z := -rail_length * 0.5 + section_length * (float(section_index) + 0.5)
+		_add_box(
+			"RailSection%d" % section_index,
+			Vector3(0.020, 0.026, section_length - 0.004),
+			Vector3(0.0, 0.0, section_z),
 			_black
 		)
+	for fastener_index in range(5):
+		var fastener_z := lerpf(-rail_length * 0.44, rail_length * 0.44, float(fastener_index) / 4.0)
 		_add_cylinder(
-			"ForwardFastener" if z_offset < 0.0 else "AftFastener",
-			0.007,
-			0.008,
-			Vector3(0.0, 0.009, float(z_offset)),
+			"Fastener%d" % fastener_index,
+			0.022,
+			0.004,
+			Vector3(0.0, 0.0, fastener_z),
+			_stainless,
+			Vector3(0.0, 0.0, PI * 0.5)
+		)
+
+
+func _build_hiking_strap() -> void:
+	# The padded working section narrows into a webbing tail at the forward
+	# pressure plate and a sewn loop at the aft support line. This is one strap,
+	# not a rigid black box spanning the entire cockpit floor.
+	_add_box(
+		"PaddedWebbing",
+		Vector3(0.120, 0.018, 0.900),
+		Vector3(0.0, 0.0, -0.035),
+		_rubber
+	)
+	_add_box(
+		"ForwardTail",
+		Vector3(0.044, 0.010, 0.120),
+		Vector3(0.0, -0.003, -0.545),
+		_soft_black
+	)
+	_add_box(
+		"AftTail",
+		Vector3(0.050, 0.010, 0.090),
+		Vector3(0.0, -0.003, 0.460),
+		_soft_black
+	)
+	for side in [-1.0, 1.0]:
+		_add_tube_between(
+			"AftLoopPort" if side < 0.0 else "AftLoopStarboard",
+			Vector3(side * 0.026, 0.005, 0.490),
+			Vector3(side * 0.026, 0.018, 0.555),
+			0.005,
+			_soft_black
+		)
+	_add_tube_between(
+		"AftLoopBridge",
+		Vector3(-0.026, 0.018, 0.555),
+		Vector3(0.026, 0.018, 0.555),
+		0.005,
+		_soft_black
+	)
+
+
+func _build_hiking_strap_plate() -> void:
+	# Approved-builder parts use a small two-screw pressure plate. The 47 mm
+	# plate length and 28 mm hole spacing follow the published ILCA toe-strap
+	# plate dimensions; the strap's narrow forward tail passes beneath it.
+	_add_box(
+		"PressurePlate",
+		Vector3(0.047, 0.010, 0.032),
+		Vector3.ZERO,
+		_black
+	)
+	for side in [-1.0, 1.0]:
+		_add_cylinder(
+			"PortScrew" if side < 0.0 else "StarboardScrew",
+			0.012,
+			0.004,
+			Vector3(side * 0.014, 0.003, 0.0),
 			_stainless
 		)
 

@@ -34,7 +34,27 @@ const UPPER_RADIAL_ENDS_HC := [
 	Vector2(0.74, 1.0),
 ]
 const CROSS_SEAMS_HEIGHT_CURVE := [Vector2(0.47, 0.035), Vector2(0.86, 0.025)]
-const BATTEN_ANCHORS_HC := [Vector2(0.27, 0.63), Vector2(0.53, 0.55), Vector2(0.76, 0.42)]
+# Official ILCA 7 MKII battens are three distinct tapered inserts.  This array
+# is ordered bottom, middle, top; the matching class-rule maxima are 750, 600,
+# and 400 mm.  The HC starts keep the procedural inserts just inside those
+# maxima while ending at the leech-side pocket closures.
+const BATTEN_ANCHORS_HC := [Vector2(0.27, 0.60), Vector2(0.53, 0.52), Vector2(0.76, 0.39)]
+const BATTEN_MAX_LENGTHS_METERS := [0.750, 0.600, 0.400]
+const BATTEN_END_CHORD_RATIO := 0.985
+const BATTEN_POCKET_END_CHORD_RATIO := 0.995
+const BATTEN_POCKET_HALF_HEIGHT_HC := 0.0052
+const BATTEN_INSERT_HALF_HEIGHT_HC := 0.0018
+const BATTEN_RIBBON_SEGMENTS := 16
+const SAIL_DETAIL_OFFSET_METERS := 0.004
+const SAIL_MARK_OFFSET_METERS := 0.022
+const SAIL_SIDE_SIGNS := [-1.0, 1.0]
+
+# The tack is the physical corner of the sail.  The cunningham cringle is the
+# separate metal eye slightly inboard/above it, and the authorised sailmaker
+# button is a second, non-load-bearing item higher in the tack patch.
+const TACK_HC := Vector2(0.0, 0.0)
+const CUNNINGHAM_CRINGLE_HC := Vector2(0.018, 0.025)
+const AUTHORIZED_SAIL_BUTTON_HC := Vector2(0.032, 0.035)
 # Stable semantic surface anchors for the later cloth solver. Telltales remain
 # paired per sail side and will sample local airflow at these same HC points.
 const TELLTALE_ANCHORS_HC := [Vector2(0.31, 0.20), Vector2(0.50, 0.20), Vector2(0.69, 0.20)]
@@ -52,16 +72,39 @@ var _surface_attachments: Array[Dictionary] = []
 func _ready() -> void:
 	mesh = _build_sail_mesh()
 	_build_luff_sleeve()
-	_register_surface_attachment("../ClassMark", Vector2(0.62, 0.49), -1.0)
-	_register_surface_attachment("../ClassMarkStarboard", Vector2(0.62, 0.49), 1.0)
-	_register_surface_attachment("../AuthorizedSailButton", Vector2(0.032, 0.035), -1.0)
-	_register_surface_attachment("../AuthorizedSailButtonStarboard", Vector2(0.032, 0.035), 1.0)
+	_register_surface_attachment(
+		"../ClassMark",
+		Vector2(0.62, 0.49),
+		-1.0,
+		&"face",
+		SAIL_MARK_OFFSET_METERS
+	)
+	_register_surface_attachment(
+		"../ClassMarkStarboard",
+		Vector2(0.62, 0.49),
+		1.0,
+		&"face",
+		SAIL_MARK_OFFSET_METERS
+	)
+	_prepare_authorized_sail_button("../AuthorizedSailButton")
+	_prepare_authorized_sail_button("../AuthorizedSailButtonStarboard")
+	_register_surface_attachment("../AuthorizedSailButton", AUTHORIZED_SAIL_BUTTON_HC, -1.0)
+	_register_surface_attachment("../AuthorizedSailButtonStarboard", AUTHORIZED_SAIL_BUTTON_HC, 1.0)
+	_register_surface_attachment("../TackGrommet", CUNNINGHAM_CRINGLE_HC, 0.0, &"through_cloth")
 	_update_surface_attachments()
 	_last_outhaul_tension = outhaul_tension
 	_last_cunningham_tension = cunningham_tension
 
 
 func _process(_delta: float) -> void:
+	synchronize_geometry()
+
+
+func synchronize_geometry() -> void:
+	# Controls and the boom solver may update several exported values in one
+	# frame.  Keeping this callable makes tests, paused-editor previews, and a
+	# future control UI able to commit the cloth and every face attachment as one
+	# deterministic state rather than observing a one-frame mixture.
 	if (
 		_geometry_dirty
 		or
@@ -84,16 +127,40 @@ func set_clew_target_local(target: Vector3) -> void:
 		return
 	_clew_target_local = target
 	_geometry_dirty = true
+	# The boom solver runs in physics after ordinary process callbacks on some
+	# frames. Commit immediately so marks, pockets, button, and cringle cannot
+	# lag one frame behind a newly positioned clew.
+	synchronize_geometry()
 
 
 func clew_target_local() -> Vector3:
 	return _clew_target_local
 
 
-func _register_surface_attachment(path: NodePath, hc: Vector2, side: float) -> void:
+func _register_surface_attachment(
+	path: NodePath,
+	hc: Vector2,
+	side: float,
+	orientation: StringName = &"face",
+	offset: float = SAIL_DETAIL_OFFSET_METERS
+) -> void:
 	var attachment := get_node_or_null(path) as Node3D
 	if attachment:
-		_surface_attachments.append({"node": attachment, "hc": hc, "side": side})
+		_surface_attachments.append({
+			"node": attachment,
+			"hc": hc,
+			"side": side,
+			"orientation": orientation,
+			"offset": offset,
+		})
+
+
+func _prepare_authorized_sail_button(path: NodePath) -> void:
+	var button := get_node_or_null(path) as MeshInstance3D
+	if not button:
+		return
+	button.mesh = _build_authorized_sail_button_mesh()
+	button.set_meta(&"sail_hardware_role", &"authorized_sailmaker_button")
 
 
 func _update_surface_attachments() -> void:
@@ -103,15 +170,22 @@ func _update_surface_attachments() -> void:
 		var attachment := attachment_data["node"] as Node3D
 		var hc := attachment_data["hc"] as Vector2
 		var side := float(attachment_data["side"])
+		var orientation := attachment_data["orientation"] as StringName
+		var offset := float(attachment_data["offset"])
 		var point := sail_surface_point(hc)
 		var tangent_height := _sail_tangent_height(hc)
-		var tangent_chord := _sail_tangent_chord(hc)
-		var normal := tangent_height.cross(tangent_chord).normalized() * side
-		attachment.position = point + normal * 0.004
-		var up_axis := tangent_height
-		var forward_axis := normal
-		var right_axis := up_axis.cross(forward_axis).normalized()
-		attachment.basis = Basis(right_axis, up_axis, forward_axis)
+		var normal := _sail_normal(hc)
+		if orientation == &"through_cloth":
+			# The procedural cringle's cylinder axis is local X.  It passes through
+			# the cloth rather than being duplicated as a graphic on each face.
+			attachment.position = point
+			attachment.basis = Basis(normal, tangent_height, normal.cross(tangent_height).normalized())
+			attachment.set_meta(&"sail_hardware_role", &"cunningham_cringle")
+			continue
+		var outward_normal := normal * side
+		attachment.position = point + outward_normal * offset
+		var right_axis := tangent_height.cross(outward_normal).normalized()
+		attachment.basis = Basis(right_axis, tangent_height, outward_normal)
 
 
 func _sail_tangent_height(hc: Vector2) -> Vector3:
@@ -131,7 +205,13 @@ func _sail_tangent_chord(hc: Vector2) -> Vector3:
 
 
 func _sail_normal(hc: Vector2) -> Vector3:
-	return _sail_tangent_height(hc).cross(_sail_tangent_chord(hc)).normalized()
+	# The head closes to zero chord, so sample infinitesimally below it when a
+	# detail endpoint needs a stable outward direction there.
+	var normal_hc := Vector2(minf(hc.x, 0.998), hc.y)
+	var normal := _sail_tangent_height(normal_hc).cross(_sail_tangent_chord(normal_hc))
+	if normal.length_squared() <= 0.00000001:
+		return Vector3.RIGHT
+	return normal.normalized()
 
 
 func _build_sail_mesh() -> ArrayMesh:
@@ -155,32 +235,48 @@ func _build_sail_mesh() -> ArrayMesh:
 	cloth.generate_normals()
 	cloth.commit(sail_mesh)
 	sail_mesh.surface_set_material(0, _make_cloth_material())
+	sail_mesh.surface_set_name(0, "cloth")
 	window.index()
 	window.generate_normals()
 	window.commit(sail_mesh)
 	sail_mesh.surface_set_material(1, _make_window_material())
+	sail_mesh.surface_set_name(1, "window")
 
 	var seams := SurfaceTool.new()
 	seams.begin(Mesh.PRIMITIVE_LINES)
 	_add_sail_edges(seams)
 	_add_bi_radial_panel_lines(seams)
+	_add_batten_pocket_stitching(seams)
 	seams.commit(sail_mesh)
 	sail_mesh.surface_set_material(2, _make_seam_material())
+	sail_mesh.surface_set_name(2, "panel_seams")
+
+	var batten_pockets := SurfaceTool.new()
+	batten_pockets.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for batten_anchor in BATTEN_ANCHORS_HC:
+		_add_batten_pocket(batten_pockets, batten_anchor)
+	batten_pockets.index()
+	batten_pockets.generate_normals()
+	batten_pockets.commit(sail_mesh)
+	sail_mesh.surface_set_material(3, _make_batten_pocket_material())
+	sail_mesh.surface_set_name(3, "batten_pockets")
 
 	var battens := SurfaceTool.new()
 	battens.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for batten_anchor in BATTEN_ANCHORS_HC:
-		_add_batten(battens, batten_anchor.x, batten_anchor.y)
+		_add_batten(battens, batten_anchor)
 	battens.index()
 	battens.generate_normals()
 	battens.commit(sail_mesh)
-	sail_mesh.surface_set_material(3, _make_batten_material())
+	sail_mesh.surface_set_material(4, _make_batten_material())
+	sail_mesh.surface_set_name(4, "battens")
 
 	var window_grid := SurfaceTool.new()
 	window_grid.begin(Mesh.PRIMITIVE_LINES)
 	_add_window_grid(window_grid)
 	window_grid.commit(sail_mesh)
-	sail_mesh.surface_set_material(4, _make_window_grid_material())
+	sail_mesh.surface_set_material(5, _make_window_grid_material())
+	sail_mesh.surface_set_name(5, "window_outline")
 	return sail_mesh
 
 
@@ -238,25 +334,45 @@ func _add_grid_vertex(
 
 func _add_window_film(surface: SurfaceTool) -> void:
 	const WINDOW_SEGMENTS := 36
-	for segment in range(WINDOW_SEGMENTS):
-		var ratio0 := float(segment) / float(WINDOW_SEGMENTS)
-		var ratio1 := float(segment + 1) / float(WINDOW_SEGMENTS)
-		var u0 := lerpf(0.17, 0.62, ratio0)
-		var u1 := lerpf(0.17, 0.62, ratio1)
-		var bottom0 := _window_bottom(ratio0)
-		var bottom1 := _window_bottom(ratio1)
-		var top0 := _window_top(ratio0)
-		var top1 := _window_top(ratio1)
-		_add_hc_triangle(surface, Vector2(bottom0, u0), Vector2(top0, u0), Vector2(top1, u1))
-		_add_hc_triangle(surface, Vector2(bottom0, u0), Vector2(top1, u1), Vector2(bottom1, u1))
+	for side in SAIL_SIDE_SIGNS:
+		for segment in range(WINDOW_SEGMENTS):
+			var ratio0 := float(segment) / float(WINDOW_SEGMENTS)
+			var ratio1 := float(segment + 1) / float(WINDOW_SEGMENTS)
+			var u0 := lerpf(0.17, 0.62, ratio0)
+			var u1 := lerpf(0.17, 0.62, ratio1)
+			var bottom0 := _window_bottom(ratio0)
+			var bottom1 := _window_bottom(ratio1)
+			var top0 := _window_top(ratio0)
+			var top1 := _window_top(ratio1)
+			_add_hc_triangle(
+				surface,
+				Vector2(bottom0, u0),
+				Vector2(top0, u0),
+				Vector2(top1, u1),
+				side
+			)
+			_add_hc_triangle(
+				surface,
+				Vector2(bottom0, u0),
+				Vector2(top1, u1),
+				Vector2(bottom1, u1),
+				side
+			)
 
 
-func _add_hc_triangle(surface: SurfaceTool, a: Vector2, b: Vector2, c: Vector2) -> void:
-	for hc in [a, b, c]:
+func _add_hc_triangle(
+	surface: SurfaceTool,
+	a: Vector2,
+	b: Vector2,
+	c: Vector2,
+	side: float
+) -> void:
+	var corners := [a, b, c] if side > 0.0 else [a, c, b]
+	for hc in corners:
 		surface.set_uv(Vector2(hc.y, 1.0 - hc.x))
 		# A sub-millimetre normal offset avoids coplanar depth flicker while the
 		# film still follows the exact same parametric surface as the cloth.
-		surface.add_vertex(sail_surface_point(hc) + _sail_normal(hc) * 0.0008)
+		surface.add_vertex(_surface_detail_point(hc, side, 0.0008))
 
 
 func _sail_point(height_ratio: float, chord_ratio: float) -> Vector3:
@@ -391,12 +507,12 @@ func _add_sail_edges(surface: SurfaceTool) -> void:
 	for segment in range(segments):
 		var t0 := float(segment) / float(segments)
 		var t1 := float(segment + 1) / float(segments)
-		_add_line(surface, _sail_point(t0, 0.0), _sail_point(t1, 0.0))
-		_add_line(surface, _sail_point(t0, 1.0), _sail_point(t1, 1.0))
+		_add_two_sided_hc_line(surface, Vector2(t0, 0.0), Vector2(t1, 0.0))
+		_add_two_sided_hc_line(surface, Vector2(t0, 1.0), Vector2(t1, 1.0))
 	for segment in range(segments):
 		var u0 := float(segment) / float(segments)
 		var u1 := float(segment + 1) / float(segments)
-		_add_line(surface, _sail_point(0.0, u0), _sail_point(0.0, u1))
+		_add_two_sided_hc_line(surface, Vector2(0.0, u0), Vector2(0.0, u1))
 
 
 func _add_window_grid(surface: SurfaceTool) -> void:
@@ -406,11 +522,27 @@ func _add_window_grid(surface: SurfaceTool) -> void:
 		var ratio1 := float(segment + 1) / float(outline_segments)
 		var u0 := lerpf(0.17, 0.62, ratio0)
 		var u1 := lerpf(0.17, 0.62, ratio1)
-		_add_line(surface, _sail_point(_window_bottom(ratio0), u0), _sail_point(_window_bottom(ratio1), u1))
-		_add_line(surface, _sail_point(_window_top(ratio0), u0), _sail_point(_window_top(ratio1), u1))
+		_add_two_sided_hc_line(
+			surface,
+			Vector2(_window_bottom(ratio0), u0),
+			Vector2(_window_bottom(ratio1), u1)
+		)
+		_add_two_sided_hc_line(
+			surface,
+			Vector2(_window_top(ratio0), u0),
+			Vector2(_window_top(ratio1), u1)
+		)
 
-	_add_line(surface, _sail_point(_window_bottom(0.0), 0.17), _sail_point(_window_top(0.0), 0.17))
-	_add_line(surface, _sail_point(_window_bottom(1.0), 0.62), _sail_point(_window_top(1.0), 0.62))
+	_add_two_sided_hc_line(
+		surface,
+		Vector2(_window_bottom(0.0), 0.17),
+		Vector2(_window_top(0.0), 0.17)
+	)
+	_add_two_sided_hc_line(
+		surface,
+		Vector2(_window_bottom(1.0), 0.62),
+		Vector2(_window_top(1.0), 0.62)
+	)
 
 	# The transparent film is not a wire lattice. Keep only its sewn outline;
 	# panel reinforcements will be represented by the shared topology pass.
@@ -443,7 +575,7 @@ func _add_hc_line(surface: SurfaceTool, from_hc: Vector2, to_hc: Vector2, segmen
 		var ratio1 := float(segment + 1) / float(segments)
 		var hc0 := from_hc.lerp(to_hc, ratio0)
 		var hc1 := from_hc.lerp(to_hc, ratio1)
-		_add_line(surface, _sail_point(hc0.x, hc0.y), _sail_point(hc1.x, hc1.y))
+		_add_two_sided_hc_line(surface, hc0, hc1)
 
 
 func _add_curved_cross_seam(surface: SurfaceTool, base_height: float, curve: float) -> void:
@@ -453,27 +585,157 @@ func _add_curved_cross_seam(surface: SurfaceTool, base_height: float, curve: flo
 		var u1 := float(segment + 1) / float(segments)
 		var t0 := base_height + sin(u0 * PI) * curve
 		var t1 := base_height + sin(u1 * PI) * curve
-		_add_line(surface, _sail_point(t0, u0), _sail_point(t1, u1))
+		_add_two_sided_hc_line(surface, Vector2(t0, u0), Vector2(t1, u1))
 
 
-func _add_batten(surface: SurfaceTool, height_ratio: float, start_chord_ratio: float) -> void:
-	var half_height := 0.009
-	var offset := Vector3(0.008, 0.0, 0.0)
-	var a := _sail_point(height_ratio - half_height, start_chord_ratio) + offset
-	var b := _sail_point(height_ratio + half_height, start_chord_ratio) + offset
-	var c := _sail_point(height_ratio + half_height, 0.985) + offset
-	var d := _sail_point(height_ratio - half_height, 0.985) + offset
-	surface.add_vertex(a)
-	surface.add_vertex(b)
-	surface.add_vertex(c)
-	surface.add_vertex(a)
-	surface.add_vertex(c)
-	surface.add_vertex(d)
+func _add_batten_pocket(surface: SurfaceTool, anchor_hc: Vector2) -> void:
+	_add_two_sided_hc_ribbon(
+		surface,
+		anchor_hc,
+		BATTEN_POCKET_END_CHORD_RATIO,
+		BATTEN_POCKET_HALF_HEIGHT_HC,
+		SAIL_DETAIL_OFFSET_METERS * 0.70
+	)
 
 
-func _add_line(surface: SurfaceTool, from: Vector3, to: Vector3) -> void:
-	surface.add_vertex(from + Vector3(0.004, 0.0, 0.0))
-	surface.add_vertex(to + Vector3(0.004, 0.0, 0.0))
+func _add_batten(surface: SurfaceTool, anchor_hc: Vector2) -> void:
+	# The narrower insert remains visible inside the sewn pocket instead of the
+	# previous broad black rectangle being mistaken for the entire pocket.
+	_add_two_sided_hc_ribbon(
+		surface,
+		Vector2(anchor_hc.x, anchor_hc.y + 0.006),
+		BATTEN_END_CHORD_RATIO,
+		BATTEN_INSERT_HALF_HEIGHT_HC,
+		SAIL_DETAIL_OFFSET_METERS * 1.05
+	)
+
+
+func _add_two_sided_hc_ribbon(
+	surface: SurfaceTool,
+	anchor_hc: Vector2,
+	end_chord_ratio: float,
+	half_height_hc: float,
+	offset: float
+) -> void:
+	# Long, single planar quads cut through the cambered cloth and made the far
+	# face appear to have missing battens.  Short conformal sections preserve
+	# the same pocket on both faces as camber changes along the chord.
+	for segment in range(BATTEN_RIBBON_SEGMENTS):
+		var chord0 := lerpf(
+			anchor_hc.y,
+			end_chord_ratio,
+			float(segment) / float(BATTEN_RIBBON_SEGMENTS)
+		)
+		var chord1 := lerpf(
+			anchor_hc.y,
+			end_chord_ratio,
+			float(segment + 1) / float(BATTEN_RIBBON_SEGMENTS)
+		)
+		var a_hc := Vector2(anchor_hc.x - half_height_hc, chord0)
+		var b_hc := Vector2(anchor_hc.x + half_height_hc, chord0)
+		var c_hc := Vector2(anchor_hc.x + half_height_hc, chord1)
+		var d_hc := Vector2(anchor_hc.x - half_height_hc, chord1)
+		for side in SAIL_SIDE_SIGNS:
+			var corners := [a_hc, b_hc, c_hc, a_hc, c_hc, d_hc]
+			if side < 0.0:
+				corners = [a_hc, c_hc, b_hc, a_hc, d_hc, c_hc]
+			for hc in corners:
+				surface.add_vertex(_surface_detail_point(hc, side, offset))
+
+
+func _add_batten_pocket_stitching(surface: SurfaceTool) -> void:
+	for anchor_hc in BATTEN_ANCHORS_HC:
+		var lower_start := Vector2(anchor_hc.x - BATTEN_POCKET_HALF_HEIGHT_HC, anchor_hc.y)
+		var upper_start := Vector2(anchor_hc.x + BATTEN_POCKET_HALF_HEIGHT_HC, anchor_hc.y)
+		var lower_end := Vector2(
+			anchor_hc.x - BATTEN_POCKET_HALF_HEIGHT_HC,
+			BATTEN_POCKET_END_CHORD_RATIO
+		)
+		var upper_end := Vector2(
+			anchor_hc.x + BATTEN_POCKET_HALF_HEIGHT_HC,
+			BATTEN_POCKET_END_CHORD_RATIO
+		)
+		_add_two_sided_hc_line_segmented(surface, lower_start, lower_end, BATTEN_RIBBON_SEGMENTS)
+		_add_two_sided_hc_line_segmented(surface, upper_start, upper_end, BATTEN_RIBBON_SEGMENTS)
+		_add_two_sided_hc_line(surface, lower_start, upper_start)
+		_add_two_sided_hc_line(surface, lower_end, upper_end)
+
+
+func _add_two_sided_hc_line(surface: SurfaceTool, from_hc: Vector2, to_hc: Vector2) -> void:
+	for side in SAIL_SIDE_SIGNS:
+		surface.add_vertex(_surface_detail_point(from_hc, side, SAIL_DETAIL_OFFSET_METERS))
+		surface.add_vertex(_surface_detail_point(to_hc, side, SAIL_DETAIL_OFFSET_METERS))
+
+
+func _add_two_sided_hc_line_segmented(
+	surface: SurfaceTool,
+	from_hc: Vector2,
+	to_hc: Vector2,
+	segments: int
+) -> void:
+	for segment in range(segments):
+		var ratio0 := float(segment) / float(segments)
+		var ratio1 := float(segment + 1) / float(segments)
+		_add_two_sided_hc_line(surface, from_hc.lerp(to_hc, ratio0), from_hc.lerp(to_hc, ratio1))
+
+
+func _surface_detail_point(hc: Vector2, side: float, offset: float) -> Vector3:
+	return sail_surface_point(hc) + _sail_normal(hc) * side * offset
+
+
+func batten_contracts() -> Array[Dictionary]:
+	var contracts: Array[Dictionary] = []
+	for batten_index in BATTEN_ANCHORS_HC.size():
+		var anchor_hc: Vector2 = BATTEN_ANCHORS_HC[batten_index]
+		var end_hc := Vector2(anchor_hc.x, BATTEN_END_CHORD_RATIO)
+		contracts.append({
+			"name": [&"bottom", &"middle", &"top"][batten_index],
+			"anchor_hc": anchor_hc,
+			"end_hc": end_hc,
+			"length_m": sail_surface_point(anchor_hc).distance_to(sail_surface_point(end_hc)),
+			"maximum_length_m": BATTEN_MAX_LENGTHS_METERS[batten_index],
+		})
+	return contracts
+
+
+func _build_authorized_sail_button_mesh() -> ArrayMesh:
+	# A class-legal MKII sail carries a small circular authorised-sailmaker
+	# button near the tack.  It must not read as the cunningham's punched eye.
+	const SEGMENTS := 32
+	const OUTER_RADIUS := 0.035
+	const INNER_RADIUS := 0.030
+	var button_mesh := ArrayMesh.new()
+	var face := SurfaceTool.new()
+	face.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for segment in range(SEGMENTS):
+		var angle0 := TAU * float(segment) / float(SEGMENTS)
+		var angle1 := TAU * float(segment + 1) / float(SEGMENTS)
+		face.add_vertex(Vector3.ZERO)
+		face.add_vertex(Vector3(cos(angle0) * INNER_RADIUS, sin(angle0) * INNER_RADIUS, 0.0))
+		face.add_vertex(Vector3(cos(angle1) * INNER_RADIUS, sin(angle1) * INNER_RADIUS, 0.0))
+	face.index()
+	face.generate_normals()
+	face.commit(button_mesh)
+	button_mesh.surface_set_material(0, _make_sail_button_material())
+	button_mesh.surface_set_name(0, "authorized_button_face")
+
+	var rim := SurfaceTool.new()
+	rim.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for segment in range(SEGMENTS):
+		var angle0 := TAU * float(segment) / float(SEGMENTS)
+		var angle1 := TAU * float(segment + 1) / float(SEGMENTS)
+		var inner0 := Vector3(cos(angle0) * INNER_RADIUS, sin(angle0) * INNER_RADIUS, 0.0002)
+		var outer0 := Vector3(cos(angle0) * OUTER_RADIUS, sin(angle0) * OUTER_RADIUS, 0.0002)
+		var inner1 := Vector3(cos(angle1) * INNER_RADIUS, sin(angle1) * INNER_RADIUS, 0.0002)
+		var outer1 := Vector3(cos(angle1) * OUTER_RADIUS, sin(angle1) * OUTER_RADIUS, 0.0002)
+		for vertex in [inner0, outer0, outer1, inner0, outer1, inner1]:
+			rim.add_vertex(vertex)
+	rim.index()
+	rim.generate_normals()
+	rim.commit(button_mesh)
+	button_mesh.surface_set_material(1, _make_sail_button_rim_material())
+	button_mesh.surface_set_name(1, "authorized_button_rim")
+	return button_mesh
 
 
 func _make_cloth_material() -> StandardMaterial3D:
@@ -514,8 +776,35 @@ func _make_seam_material() -> StandardMaterial3D:
 
 func _make_batten_material() -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
-	material.albedo_color = Color(0.18, 0.2, 0.2, 0.9)
+	material.albedo_color = Color(0.16, 0.18, 0.18, 0.86)
 	material.roughness = 0.7
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return material
+
+
+func _make_batten_pocket_material() -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(0.73, 0.75, 0.70, 0.88)
+	material.roughness = 0.78
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return material
+
+
+func _make_sail_button_material() -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(0.96, 0.29, 0.035, 1.0)
+	material.roughness = 0.55
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return material
+
+
+func _make_sail_button_rim_material() -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(0.17, 0.12, 0.09, 1.0)
+	material.roughness = 0.62
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	return material

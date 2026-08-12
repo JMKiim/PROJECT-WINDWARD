@@ -9,6 +9,12 @@ const MIN_SAMPLES_PER_LEG := 3
 const MAX_SAMPLES_PER_LEG := 32
 const ROPE_UV_REPEAT_LENGTH := 0.12
 const ROPE_GEOMETRY_EPSILON_SQUARED := 0.0000000001
+const TRAVELLER_BLOCK_CENTER_POSITION := Vector3(0.0, 0.332, 1.46)
+const TRAVELLER_BLOCK_MAX_TRAVEL := 0.360
+const TRAVELLER_BLOCK_RESPONSE := 9.0
+const TRAVELLER_LOOP_JOIN_OFFSET := Vector3(-0.055, 0.006, -0.012)
+const TRAVELLER_FREE_END_OFFSET := Vector3(-0.090, 0.018, -0.035)
+const SHEAVE_WRAP_SAMPLES := 7
 
 @onready var sail_pivot: Node3D = get_node(sail_pivot_path) as Node3D
 @onready var boom_pivot: Node3D = sail_pivot.get_node("BoomPivot") as Node3D
@@ -18,21 +24,51 @@ var _rigging_mesh: MeshInstance3D
 var _last_boom_angle := INF
 var _last_boom_pitch := INF
 var _last_mainsheet_route := PackedVector3Array()
+var _traveller_block: IlcaHardwarePart
 
 
 func _ready() -> void:
+	_traveller_block = boat.get_node("TravellerBlock") as IlcaHardwarePart
 	_rigging_mesh = MeshInstance3D.new()
 	_rigging_mesh.name = "RunningRiggingMesh"
 	add_child(_rigging_mesh)
 	_rebuild_rigging()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	var traveller_moved := _update_traveller_block(delta)
 	if (
-		absf(sail_pivot.rotation.y - _last_boom_angle) > deg_to_rad(0.08)
+		traveller_moved
+		or absf(sail_pivot.rotation.y - _last_boom_angle) > deg_to_rad(0.08)
 		or absf(boom_pivot.rotation.x - _last_boom_pitch) > deg_to_rad(0.04)
 	):
 		_rebuild_rigging()
+
+
+func _update_traveller_block(delta: float) -> bool:
+	if not is_instance_valid(_traveller_block):
+		return false
+	# The linked block is free to run along the taut stern loop.  Boom yaw is a
+	# stable visual proxy for the mainsheet's lateral load, while the sine keeps
+	# the fitting centred when the boom is centred and eases it into each eye.
+	var target_x := clampf(
+		sin(sail_pivot.rotation.y) * TRAVELLER_BLOCK_MAX_TRAVEL,
+		-TRAVELLER_BLOCK_MAX_TRAVEL,
+		TRAVELLER_BLOCK_MAX_TRAVEL
+	)
+	var previous_position := _traveller_block.position
+	var response := 1.0 - exp(-TRAVELLER_BLOCK_RESPONSE * maxf(delta, 0.0))
+	_traveller_block.position = Vector3(
+		lerpf(_traveller_block.position.x, target_x, response),
+		TRAVELLER_BLOCK_CENTER_POSITION.y,
+		TRAVELLER_BLOCK_CENTER_POSITION.z
+	)
+	# Preserve the scene's upright, cross-deck block orientation. The linked
+	# hardware itself provides the perpendicular articulation between its small
+	# traveller sheave and large mainsheet sheave; yawing the complete assembly
+	# would twist the deck line out of the small sheave plane.
+	_traveller_block.rotation = Vector3(0.0, 0.0, PI * 0.5)
+	return previous_position.distance_squared_to(_traveller_block.position) > 0.00000001
 
 
 func _rebuild_rigging() -> void:
@@ -90,7 +126,7 @@ func _rebuild_rigging() -> void:
 	)
 	_add_rope_surface(
 		rig_mesh,
-		hiking_support_route_points(),
+		[hiking_support_route_points()],
 		0.004,
 		Color(0.08, 0.10, 0.11)
 	)
@@ -114,14 +150,29 @@ func traveller_route_points() -> PackedVector3Array:
 	var traveller := boat.get_node("TravellerBlock") as IlcaHardwarePart
 	var starboard_fairlead := boat.get_node("StarboardTravellerFairlead") as IlcaHardwarePart
 	var traveller_cleat := boat.get_node_or_null("TravellerCleat") as IlcaHardwarePart
-	var points := PackedVector3Array([
-		_hardware_anchor_in_rigging(port_fairlead, &"bridge"),
-		_hardware_anchor_in_rigging(traveller, &"traveller_sheave"),
-		_hardware_anchor_in_rigging(starboard_fairlead, &"bridge"),
-	])
+	var port_anchor := _hardware_anchor_in_rigging(port_fairlead, &"bridge")
+	var traveller_anchor := _hardware_anchor_in_rigging(traveller, &"traveller_sheave")
+	var starboard_anchor := _hardware_anchor_in_rigging(starboard_fairlead, &"bridge")
+	# ILCA rule 3(h): one line forms a simple closed loop through both plastic
+	# eyes and the small linked traveller sheave.  Start at the eye-splice join
+	# on the starboard leg, follow the loop once, revisit that same join, then
+	# lead the line's only free end through the clam cleat.
+	var loop_join := starboard_anchor + TRAVELLER_LOOP_JOIN_OFFSET
+	var points := PackedVector3Array([loop_join, starboard_anchor])
+	_append_sheave_wrap(
+		points,
+		traveller_anchor,
+		IlcaHardwarePart.TRAVELLER_LINE_SHEAVE_DIAMETER * 0.5,
+		starboard_anchor,
+		port_anchor,
+		global_basis.inverse() * traveller.global_basis.z
+	)
+	points.append(port_anchor)
+	points.append(loop_join)
 	if traveller_cleat:
-		points.append(_hardware_anchor_in_rigging(traveller_cleat, &"cleat"))
-		points.append(to_local(traveller_cleat.to_global(Vector3(0.08, 0.020, 0.035))))
+		var cleat_anchor := _hardware_anchor_in_rigging(traveller_cleat, &"cleat")
+		points.append(cleat_anchor)
+		points.append(cleat_anchor + TRAVELLER_FREE_END_OFFSET)
 	return points
 
 
@@ -155,14 +206,19 @@ func _mainsheet_render_route(anchors: PackedVector3Array) -> PackedVector3Array:
 		anchors[1],
 		IlcaHardwarePart.TRAVELLER_MAIN_SHEAVE_DIAMETER * 0.5,
 		anchors[0],
-		anchors[2]
+		anchors[2],
+		(anchors[2] - anchors[0]).cross(Vector3.UP),
+		false
 	)
 	_append_sheave_wrap(
 		route,
 		anchors[2],
 		0.025,
 		route[-1],
-		anchors[3]
+		anchors[3],
+		global_basis.inverse()
+			* boat.get_node("SailPivot/BoomPivot/AftBoomBlock").global_basis.x,
+		false
 	)
 	route.append(anchors[3])
 	_append_sheave_wrap(
@@ -170,7 +226,10 @@ func _mainsheet_render_route(anchors: PackedVector3Array) -> PackedVector3Array:
 		anchors[4],
 		0.025,
 		route[-1],
-		anchors[5]
+		anchors[5],
+		global_basis.inverse()
+			* boat.get_node("SailPivot/BoomPivot/ForwardBoomBlock").global_basis.x,
+		false
 	)
 	route.append(anchors[5])
 	return route
@@ -181,25 +240,41 @@ func _append_sheave_wrap(
 	center: Vector3,
 	radius: float,
 	incoming: Vector3,
-	outgoing: Vector3
+	outgoing: Vector3,
+	axle_hint := Vector3.ZERO,
+	prefer_long_arc := true
 ) -> void:
-	# Three points on the visible sheave rim keep the rope out of the axle and
-	# housing. The public hardware anchor remains the centre used to derive this
-	# local wrap; later articulation can replace this with exact tangency math.
-	var incoming_direction := (incoming - center).normalized()
-	var outgoing_direction := (outgoing - center).normalized()
-	if incoming_direction.length_squared() < 0.5 or outgoing_direction.length_squared() < 0.5:
+	# Project both legs into the sheave plane, derive their contact directions,
+	# then sample the loaded visible arc.  This keeps rope on the circumference
+	# rather than passing through the axle or cutting across the sheave face.
+	var incoming_direction := incoming - center
+	var outgoing_direction := outgoing - center
+	var axle := axle_hint
+	if axle.length_squared() <= ROPE_GEOMETRY_EPSILON_SQUARED:
+		axle = incoming_direction.cross(outgoing_direction)
+	if axle.length_squared() <= ROPE_GEOMETRY_EPSILON_SQUARED:
+		axle = Vector3.RIGHT
+	axle = axle.normalized()
+	incoming_direction -= axle * incoming_direction.dot(axle)
+	outgoing_direction -= axle * outgoing_direction.dot(axle)
+	if (
+		incoming_direction.length_squared() <= ROPE_GEOMETRY_EPSILON_SQUARED
+		or outgoing_direction.length_squared() <= ROPE_GEOMETRY_EPSILON_SQUARED
+	):
 		route.append(center)
 		return
-	if incoming_direction.dot(outgoing_direction) < -0.98:
-		var perpendicular := incoming_direction.cross(Vector3.UP)
-		if perpendicular.length_squared() < 0.01:
-			perpendicular = incoming_direction.cross(Vector3.RIGHT)
-		outgoing_direction = perpendicular.normalized()
-	var middle_direction := (incoming_direction + outgoing_direction).normalized()
-	route.append(center + incoming_direction * radius)
-	route.append(center + middle_direction * radius)
-	route.append(center + outgoing_direction * radius)
+	incoming_direction = incoming_direction.normalized()
+	outgoing_direction = outgoing_direction.normalized()
+	var signed_angle := atan2(
+		axle.dot(incoming_direction.cross(outgoing_direction)),
+		clampf(incoming_direction.dot(outgoing_direction), -1.0, 1.0)
+	)
+	if prefer_long_arc and absf(signed_angle) < PI * 0.5:
+		signed_angle -= signf(signed_angle if absf(signed_angle) > 0.001 else 1.0) * TAU
+	for sample_index in range(SHEAVE_WRAP_SAMPLES):
+		var sample_ratio := float(sample_index) / float(SHEAVE_WRAP_SAMPLES - 1)
+		var direction := Basis(axle, signed_angle * sample_ratio) * incoming_direction
+		route.append(center + direction * radius)
 
 
 func vang_route_points() -> Array[PackedVector3Array]:
@@ -261,19 +336,20 @@ func centreboard_retention_route_points() -> PackedVector3Array:
 	])
 
 
-func hiking_support_route_points() -> Array[PackedVector3Array]:
+func hiking_support_route_points() -> PackedVector3Array:
+	var hiking_strap := boat.get_node("HikingStrap") as IlcaHardwarePart
 	var port_eye := boat.get_node("PortHikingStrapEye") as IlcaHardwarePart
 	var starboard_eye := boat.get_node("StarboardHikingStrapEye") as IlcaHardwarePart
-	return [
-		PackedVector3Array([
-			Vector3(0.0, 0.095, 1.32),
-			_hardware_anchor_in_rigging(port_eye, &"bridge"),
-		]),
-		PackedVector3Array([
-			Vector3(0.0, 0.095, 1.32),
-			_hardware_anchor_in_rigging(starboard_eye, &"bridge"),
-		]),
-	]
+	var aft_loop := _hardware_anchor_in_rigging(hiking_strap, &"aft_loop")
+	# ILCA Rule 17(c) permits one supporting line between the aft strap end and
+	# the two aft-cockpit eye straps. Keep it one continuous route rather than
+	# rendering two independent ropes, with a short pass through the sewn loop.
+	return PackedVector3Array([
+		_hardware_anchor_in_rigging(port_eye, &"bridge"),
+		aft_loop + Vector3(-0.026, 0.0, 0.0),
+		aft_loop + Vector3(0.026, 0.0, 0.0),
+		_hardware_anchor_in_rigging(starboard_eye, &"bridge"),
+	])
 
 
 func last_mainsheet_route() -> PackedVector3Array:
