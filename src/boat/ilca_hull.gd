@@ -92,7 +92,7 @@ func _build_hull_mesh() -> ArrayMesh:
 	var cockpit_material := _make_material(Color(0.975, 0.978, 0.965), 0.58)
 	cockpit_material.emission_enabled = true
 	cockpit_material.emission = Color(0.975, 0.978, 0.965)
-	cockpit_material.emission_energy_multiplier = 0.20
+	cockpit_material.emission_energy_multiplier = 0.50
 	hull_mesh.surface_set_material(2, cockpit_material)
 
 	var molded_edges := SurfaceTool.new()
