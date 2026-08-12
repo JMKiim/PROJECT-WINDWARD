@@ -84,7 +84,16 @@ func _build_hull_mesh() -> ArrayMesh:
 	# _add_cockpit_well() authors the normals explicitly. Regenerating them here
 	# would blend the floor and walls back together at their shared corners.
 	cockpit.commit(hull_mesh)
-	hull_mesh.surface_set_material(2, _make_material(Color(0.93, 0.94, 0.925), 0.62))
+	# The cockpit is the same gel-coated GRP moulding as the deck.  Its slightly
+	# higher roughness carries the non-slip/readability difference without the
+	# old grey-blue colour break that made it look like a separate insert. A
+	# restrained neutral bounce term compensates for this prototype's single sun:
+	# otherwise the deep well receives mostly blue sky ambient.
+	var cockpit_material := _make_material(Color(0.975, 0.978, 0.965), 0.58)
+	cockpit_material.emission_enabled = true
+	cockpit_material.emission = Color(0.975, 0.978, 0.965)
+	cockpit_material.emission_energy_multiplier = 0.20
+	hull_mesh.surface_set_material(2, cockpit_material)
 
 	var molded_edges := SurfaceTool.new()
 	molded_edges.begin(Mesh.PRIMITIVE_TRIANGLES)

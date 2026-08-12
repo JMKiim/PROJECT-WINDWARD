@@ -975,16 +975,19 @@ func tiller_control_target_boat_position(rudder_input: float) -> Vector3:
 	var steering_side := signf(side)
 	if is_zero_approx(steering_side):
 		steering_side = 1.0 if _hand_exchange_direction > 0.0 else -1.0
-	var target_lateral := (
-		side * TILLER_TARGET_LATERAL
-		+ minf(rudder_input, 0.0) * 0.08
-		- maxf(rudder_input, 0.0) * 0.20
+	# Steering displacement is expressed in the seated sailor's mirrored frame.
+	# This keeps (port,+rudder) and (starboard,-rudder) anatomically symmetric.
+	var mirrored_rudder := rudder_input * steering_side
+	var target_lateral := side * (
+		TILLER_TARGET_LATERAL
+		+ minf(mirrored_rudder, 0.0) * 0.08
+		- maxf(mirrored_rudder, 0.0) * 0.20
 	)
-	var target_height := TILLER_TARGET_HEIGHT + maxf(rudder_input, 0.0) * 0.20
+	var target_height := TILLER_TARGET_HEIGHT + maxf(mirrored_rudder, 0.0) * 0.12
 	var normal_target := Vector3(
 		target_lateral,
 		target_height,
-		TILLER_TARGET_AFT + rudder_input * steering_side * TILLER_PUSH_PULL_TRAVEL
+		TILLER_TARGET_AFT + mirrored_rudder * TILLER_PUSH_PULL_TRAVEL
 	)
 	var handover_side := _hand_exchange_direction
 	if is_zero_approx(handover_side):
@@ -1049,7 +1052,12 @@ func _create_held_mainsheet() -> void:
 func _update_held_mainsheet() -> void:
 	if not _sheet_hand_anchor:
 		return
-	var from := MAIN_SHEET_BLOCK_POSITION
+	var ratchet := _boat.get_node_or_null("RatchetBlock") as IlcaHardwarePart
+	var from := (
+		to_local(ratchet.rope_anchor_global(&"sheave"))
+		if ratchet
+		else MAIN_SHEET_BLOCK_POSITION
+	)
 	var to := to_local(_sheet_hand_anchor.global_position)
 	_orient_cylinder(_held_mainsheet, from, to)
 

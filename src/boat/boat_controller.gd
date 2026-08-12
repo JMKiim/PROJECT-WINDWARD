@@ -21,6 +21,9 @@ const MAX_ROLL_ANGLE := deg_to_rad(14.0)
 
 @onready var sail_pivot: Node3D = $SailPivot
 @onready var boom_pivot: Node3D = $SailPivot/BoomPivot
+@onready var sail: IlcaSevenSail = $SailPivot/Sail
+@onready var clew_strap: IlcaHardwarePart = $SailPivot/BoomPivot/ClewStrap
+@onready var clew_grommet: Node3D = $SailPivot/ClewGrommet
 @onready var rudder_pivot: Node3D = $RudderPivot
 @onready var tiller_extension_pivot: Node3D = $RudderPivot/TillerExtensionPivot
 @onready var sailor: WindwardSailor = $Sailor
@@ -40,6 +43,7 @@ func _ready() -> void:
 	sailing_state.heading_radians = rotation.y
 	_heave_position = global_position.y
 	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+	_sync_sail_clew_to_boom()
 
 
 func _physics_process(delta: float) -> void:
@@ -155,12 +159,16 @@ func _update_sail_visual(delta: float) -> void:
 	sail_pivot.rotation.y = sailing_state.boom_angle_radians
 	# Vang load has its own boom pivot. The sail remains on the mast sleeve;
 	# only its tack and outhaul-held clew meet the boom at the ends.
-	var target_boom_pitch := deg_to_rad(lerpf(-1.0, 2.0, vang_tension))
+	# A real ILCA boom rises aft from the gooseneck. More vang lowers the clew
+	# while the mast-sleeved luff stays fixed; the sail surface follows the actual
+	# clew strap rather than remaining behind as a disconnected rigid triangle.
+	var target_boom_pitch := deg_to_rad(lerpf(-7.0, -4.5, vang_tension))
 	boom_pivot.rotation.x = lerp_angle(
 		boom_pivot.rotation.x,
 		target_boom_pitch,
 		1.0 - exp(-7.0 * delta)
 	)
+	_sync_sail_clew_to_boom()
 	var target_rudder_angle := sailing_command.rudder * MAX_RUDDER_VISUAL_ANGLE
 	rudder_pivot.rotation.y = lerp_angle(
 		rudder_pivot.rotation.y,
@@ -186,3 +194,23 @@ func _update_sail_visual(delta: float) -> void:
 		# The hand target already moves continuously with the connected body. A
 		# rigid tiller extension must follow it exactly rather than lag and detach.
 		tiller_extension_pivot.quaternion = desired_extension_rotation
+		var target_distance := grip_direction_in_rudder.length()
+		var grip_distance := clampf(target_distance, 0.64, 0.80)
+		var tiller_grip := tiller_extension_pivot.get_node("TillerGrip") as Node3D
+		tiller_grip.position.z = -grip_distance
+		var visible_extension := tiller_extension_pivot.get_node("TillerJoint") as IlcaHardwarePart
+		visible_extension.set_tiller_extension_grip_distance(grip_distance)
+
+
+func _sync_sail_clew_to_boom() -> void:
+	if (
+		not is_instance_valid(sail)
+		or not is_instance_valid(clew_strap)
+		or not is_instance_valid(clew_grommet)
+	):
+		return
+	# The sail clew and the outhaul meet the visible metal eye at the top of the
+	# webbing, not the ClewStrap node origin on the boom centreline.
+	var clew_eye_global := clew_strap.rope_anchor_global(&"bridge")
+	clew_grommet.global_position = clew_eye_global
+	sail.set_clew_target_local(sail.to_local(clew_eye_global))

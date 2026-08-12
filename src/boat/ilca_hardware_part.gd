@@ -13,6 +13,16 @@ enum PartKind {
 	CAM_CLEAT,
 	SELF_BAILER,
 	EYE_STRAP,
+	GOOSENECK,
+	SAIL_CRINGLE,
+	CLEW_STRAP,
+	BOOM_END_FITTING,
+	RUDDER_HEAD,
+	TILLER,
+	TILLER_EXTENSION,
+	TRAVELLER_FAIRLEAD,
+	TRAVELLER_CLEAT,
+	RUDDER_GUDGEON,
 }
 
 @export var part_kind: PartKind = PartKind.DECK_RATCHET
@@ -68,6 +78,18 @@ func rope_anchor_local(anchor_name: StringName = &"sheave") -> Vector3:
 			return Vector3(0.0, 0.031, -0.012)
 		PartKind.EYE_STRAP:
 			return Vector3(0.0, 0.038, 0.0)
+		PartKind.SAIL_CRINGLE:
+			return Vector3.ZERO
+		PartKind.CLEW_STRAP:
+			return Vector3(0.0, 0.068, 0.0)
+		PartKind.BOOM_END_FITTING:
+			return Vector3(0.0, 0.025, -0.012)
+		PartKind.TRAVELLER_FAIRLEAD:
+			return Vector3(0.0, 0.030, 0.0)
+		PartKind.TRAVELLER_CLEAT:
+			return Vector3(0.0, 0.028, -0.008)
+		PartKind.GOOSENECK:
+			return Vector3(0.0, 0.0, 0.105)
 	return Vector3.ZERO
 
 
@@ -100,6 +122,26 @@ func _ready() -> void:
 			_build_self_bailer()
 		PartKind.EYE_STRAP:
 			_build_eye_strap()
+		PartKind.GOOSENECK:
+			_build_gooseneck()
+		PartKind.SAIL_CRINGLE:
+			_build_sail_cringle()
+		PartKind.CLEW_STRAP:
+			_build_clew_strap()
+		PartKind.BOOM_END_FITTING:
+			_build_boom_end_fitting()
+		PartKind.RUDDER_HEAD:
+			_build_rudder_head()
+		PartKind.TILLER:
+			_build_tiller()
+		PartKind.TILLER_EXTENSION:
+			_build_tiller_extension()
+		PartKind.TRAVELLER_FAIRLEAD:
+			_build_traveller_fairlead()
+		PartKind.TRAVELLER_CLEAT:
+			_build_traveller_cleat()
+		PartKind.RUDDER_GUDGEON:
+			_build_rudder_gudgeon()
 
 
 func _build_block(sheave_radius: float, stand_up: bool, double_sheave: bool) -> void:
@@ -131,12 +173,23 @@ func _build_block(sheave_radius: float, stand_up: bool, double_sheave: bool) -> 
 		_add_box("EyeStrapBase", Vector3(0.102, 0.006, 0.052), Vector3(0.0, -0.047, 0.0), _stainless)
 
 	for side in [-1.0, 1.0]:
-		_add_box(
+		var cheek_profile := PackedVector2Array([
+			Vector2(-block_depth * 0.48, sheave_radius * 0.10),
+			Vector2(-block_depth * 0.56, block_height * 0.32),
+			Vector2(-block_depth * 0.44, block_height * 0.82),
+			Vector2(-block_depth * 0.24, block_height * 1.04),
+			Vector2(block_depth * 0.24, block_height * 1.04),
+			Vector2(block_depth * 0.44, block_height * 0.82),
+			Vector2(block_depth * 0.56, block_height * 0.32),
+			Vector2(block_depth * 0.48, sheave_radius * 0.10),
+		])
+		var cheek := _add_extruded_profile(
 			"PortCheek" if side < 0.0 else "StarboardCheek",
-			Vector3(sheave_radius * 0.30, block_height, block_depth),
-			Vector3(side * cheek_gap, block_height * 0.48, 0.0),
+			cheek_profile,
+			sheave_radius * 0.30,
 			_black
 		)
+		cheek.position.x = side * cheek_gap
 
 	for sheave_index in range(sheave_positions.size()):
 		_add_cylinder(
@@ -155,10 +208,11 @@ func _build_block(sheave_radius: float, stand_up: bool, double_sheave: bool) -> 
 		_stainless,
 		Vector3(0.0, 0.0, PI * 0.5)
 	)
-	_add_box(
+	_add_tube_between(
 		"HeadBridge",
-		Vector3(cheek_gap * 2.30, sheave_radius * 0.28, block_depth),
-		Vector3(0.0, block_height, 0.0),
+		Vector3(-cheek_gap * 1.08, block_height, 0.0),
+		Vector3(cheek_gap * 1.08, block_height, 0.0),
+		sheave_radius * 0.14,
 		_black
 	)
 
@@ -188,6 +242,8 @@ func _build_traveller_block() -> void:
 	var line_radius := TRAVELLER_LINE_SHEAVE_DIAMETER * 0.5
 	var main_cheek_offset := 0.012
 	var line_cheek_offset := 0.010
+	var main_cheek_profile := _block_cheek_profile(main_radius, main_radius * 1.72)
+	var line_cheek_profile := _block_cheek_profile(line_radius, line_radius * 1.72)
 
 	_add_cylinder(
 		"MainsheetSheave",
@@ -197,12 +253,16 @@ func _build_traveller_block() -> void:
 		_sheave
 	)
 	for side in [-1.0, 1.0]:
-		_add_box(
+		var main_cheek := _add_extruded_profile(
 			"MainsheetPortCheek" if side < 0.0 else "MainsheetStarboardCheek",
-			Vector3(main_radius * 2.55, 0.006, main_radius * 1.72),
-			TRAVELLER_MAIN_SHEAVE_CENTER + Vector3(0.0, side * main_cheek_offset, 0.0),
+			main_cheek_profile,
+			0.006,
 			_black
 		)
+		# Profile extrusion is along local X; rotate it so the linked mainsheet
+		# block cheeks sit either side of the Y-axis sheave.
+		main_cheek.rotation.z = PI * 0.5
+		main_cheek.position = TRAVELLER_MAIN_SHEAVE_CENTER + Vector3(0.0, side * main_cheek_offset, 0.0)
 	_add_cylinder(
 		"MainsheetAxle",
 		main_cheek_offset * 2.5,
@@ -226,12 +286,15 @@ func _build_traveller_block() -> void:
 		Vector3(PI * 0.5, 0.0, 0.0)
 	)
 	for side in [-1.0, 1.0]:
-		_add_box(
+		var line_cheek := _add_extruded_profile(
 			"TravellerPortCheek" if side < 0.0 else "TravellerStarboardCheek",
-			Vector3(line_radius * 2.55, line_radius * 1.72, 0.006),
-			TRAVELLER_LINE_SHEAVE_CENTER + Vector3(0.0, 0.0, side * line_cheek_offset),
+			line_cheek_profile,
+			0.006,
 			_black
 		)
+		# This smaller linked block is perpendicular to the mainsheet block.
+		line_cheek.rotation.y = PI * 0.5
+		line_cheek.position = TRAVELLER_LINE_SHEAVE_CENTER + Vector3(0.0, 0.0, side * line_cheek_offset)
 	_add_cylinder(
 		"TravellerAxle",
 		line_cheek_offset * 2.5,
@@ -261,6 +324,20 @@ func _build_traveller_block() -> void:
 			0.0035,
 			_stainless
 		)
+
+
+func _block_cheek_profile(sheave_radius: float, block_depth: float) -> PackedVector2Array:
+	var block_height := sheave_radius * 2.55
+	return PackedVector2Array([
+		Vector2(-block_depth * 0.48, sheave_radius * 0.10),
+		Vector2(-block_depth * 0.56, block_height * 0.32),
+		Vector2(-block_depth * 0.44, block_height * 0.82),
+		Vector2(-block_depth * 0.24, block_height * 1.04),
+		Vector2(block_depth * 0.24, block_height * 1.04),
+		Vector2(block_depth * 0.44, block_height * 0.82),
+		Vector2(block_depth * 0.56, block_height * 0.32),
+		Vector2(block_depth * 0.48, sheave_radius * 0.10),
+	])
 
 
 func _build_daggerboard_case() -> void:
@@ -422,6 +499,143 @@ func _build_eye_strap() -> void:
 	_add_tube_between("StarboardLeg", Vector3(0.026, 0.038, 0.0), Vector3(0.026, 0.004, 0.0), 0.005, _stainless)
 
 
+func _build_gooseneck() -> void:
+	# The gooseneck is a mast band, twin lug and transverse pin—not a deck eye.
+	_add_cylinder("MastBand", 0.060, 0.061, Vector3(0.0, 0.0, 0.0), _stainless)
+	for side in [-1.0, 1.0]:
+		_add_box(
+			"PortLug" if side < 0.0 else "StarboardLug",
+			Vector3(0.010, 0.050, 0.105),
+			Vector3(side * 0.027, 0.0, 0.080),
+			_stainless
+		)
+	_add_cylinder(
+		"BoomPin", 0.074, 0.010, Vector3(0.0, 0.0, 0.105), _black,
+		Vector3(0.0, 0.0, PI * 0.5)
+	)
+	_add_box("BoomJaw", Vector3(0.044, 0.039, 0.100), Vector3(0.0, 0.0, 0.142), _black)
+
+
+func _build_sail_cringle() -> void:
+	# Two shallow discs leave a dark centre that reads as the punched eye while
+	# keeping this procedural fitting robust from both sides of the cloth.
+	_add_cylinder("Grommet", 0.008, 0.023, Vector3.ZERO, _stainless, Vector3(0.0, 0.0, PI * 0.5))
+	for side in [-1.0, 1.0]:
+		_add_cylinder(
+			"PortEye" if side < 0.0 else "StarboardEye",
+			0.002,
+			0.012,
+			Vector3(side * 0.005, 0.0, 0.0),
+			_soft_black,
+			Vector3(0.0, 0.0, PI * 0.5)
+		)
+
+
+func _build_clew_strap() -> void:
+	# Webbing embraces the loose-footed boom and carries the sail's metal eye.
+	_add_box("WebbingPort", Vector3(0.010, 0.092, 0.030), Vector3(-0.036, 0.010, 0.0), _soft_black)
+	_add_box("WebbingStarboard", Vector3(0.010, 0.092, 0.030), Vector3(0.036, 0.010, 0.0), _soft_black)
+	_add_box("WebbingCrown", Vector3(0.082, 0.012, 0.030), Vector3(0.0, 0.052, 0.0), _soft_black)
+	_add_cylinder("ClewEye", 0.010, 0.023, Vector3(0.0, 0.068, 0.0), _stainless, Vector3(0.0, 0.0, PI * 0.5))
+	_add_cylinder("ClewOpening", 0.012, 0.011, Vector3(0.0, 0.068, 0.0), _soft_black, Vector3(0.0, 0.0, PI * 0.5))
+
+
+func _build_boom_end_fitting() -> void:
+	_add_cylinder("EndPlug", 0.080, 0.030, Vector3(0.0, 0.0, 0.0), _black, Vector3(PI * 0.5, 0.0, 0.0))
+	_add_cylinder("OuthaulSheave", 0.020, 0.017, Vector3(0.0, 0.025, -0.012), _sheave, Vector3(0.0, 0.0, PI * 0.5))
+	_add_cylinder("SheaveAxle", 0.050, 0.004, Vector3(0.0, 0.025, -0.012), _stainless, Vector3(0.0, 0.0, PI * 0.5))
+
+
+func _build_rudder_head() -> void:
+	var cheek_profile := PackedVector2Array([
+		Vector2(-0.115, -0.115), Vector2(0.090, -0.115),
+		Vector2(0.115, -0.070), Vector2(0.105, 0.095),
+		Vector2(0.055, 0.125), Vector2(-0.095, 0.110),
+	])
+	# Two genuinely separate aluminium cheeks leave the blade gap visible at
+	# first-person distance. The old solid 44 mm extrusion read as one black box.
+	for side in [-1.0, 1.0]:
+		var cheek := _add_extruded_profile(
+			"PortCheek" if side < 0.0 else "StarboardCheek",
+			cheek_profile,
+			0.006,
+			_black
+		)
+		cheek.position.x = side * 0.022
+	_add_cylinder("BladeBolt", 0.052, 0.012, Vector3(0.0, -0.025, 0.025), _stainless, Vector3(0.0, 0.0, PI * 0.5))
+	_add_cylinder("UpperSpacingPin", 0.052, 0.006, Vector3(0.0, 0.078, -0.045), _stainless, Vector3(0.0, 0.0, PI * 0.5))
+	_add_cylinder("LowerSpacingPin", 0.052, 0.006, Vector3(0.0, -0.078, -0.065), _stainless, Vector3(0.0, 0.0, PI * 0.5))
+	_add_cylinder("DownhaulHole", 0.054, 0.007, Vector3(0.0, -0.070, 0.070), _soft_black, Vector3(0.0, 0.0, PI * 0.5))
+
+
+func _build_tiller() -> void:
+	_add_tube_between("CarbonTiller", Vector3(0.0, 0.0, -0.675), Vector3(0.0, 0.0, 0.675), 0.012, _soft_black)
+	_add_box("HeadSocket", Vector3(0.034, 0.029, 0.090), Vector3(0.0, 0.0, 0.625), _black)
+	_add_box("ExtensionBase", Vector3(0.030, 0.026, 0.075), Vector3(0.0, 0.0, -0.635), _rubber)
+
+
+func _build_tiller_extension() -> void:
+	_add_tube_between("CarbonShaft", Vector3(0.0, 0.0, -0.030), Vector3(0.0, 0.0, -0.835), 0.011, _soft_black)
+	_add_cylinder("UniversalJoint", 0.042, 0.015, Vector3.ZERO, _rubber)
+	var grip := _add_tube_between("Grip", Vector3(0.0, 0.0, -0.090), Vector3(0.0, 0.0, 0.085), 0.014, _rubber)
+	grip.position.z = -0.725
+	for ring_index in range(5):
+		var rib := _add_tube_between(
+			"GripRib%d" % ring_index,
+			Vector3(0.0, 0.0, -0.005),
+			Vector3(0.0, 0.0, 0.005),
+			0.015,
+			_rubber
+		)
+		rib.position.z = -0.665 - float(ring_index) * 0.032
+
+
+func set_tiller_extension_grip_distance(distance: float) -> void:
+	if part_kind != PartKind.TILLER_EXTENSION:
+		return
+	var grip_center := -clampf(distance, 0.64, 0.80)
+	var grip := get_node_or_null("Grip") as Node3D
+	if grip:
+		grip.position.z = grip_center
+	for ring_index in range(5):
+		var rib := get_node_or_null("GripRib%d" % ring_index) as Node3D
+		if rib:
+			rib.position.z = grip_center + 0.060 - float(ring_index) * 0.032
+
+
+func _build_traveller_fairlead() -> void:
+	_add_box("PlasticBase", Vector3(0.072, 0.010, 0.042), Vector3.ZERO, _black)
+	_add_tube_between("PortLeg", Vector3(-0.023, 0.006, 0.0), Vector3(-0.023, 0.030, 0.0), 0.006, _black)
+	_add_tube_between("Bridge", Vector3(-0.023, 0.030, 0.0), Vector3(0.023, 0.030, 0.0), 0.006, _black)
+	_add_tube_between("StarboardLeg", Vector3(0.023, 0.030, 0.0), Vector3(0.023, 0.006, 0.0), 0.006, _black)
+
+
+func _build_traveller_cleat() -> void:
+	_add_box("ClamBase", Vector3(0.062, 0.010, 0.072), Vector3.ZERO, _black)
+	for side in [-1.0, 1.0]:
+		_add_box(
+			"PortJaw" if side < 0.0 else "StarboardJaw",
+			Vector3(0.018, 0.034, 0.058),
+			Vector3(side * 0.014, 0.022, -0.006),
+			_black,
+			Vector3(0.0, side * deg_to_rad(10.0), side * deg_to_rad(-7.0))
+		)
+	_add_tube_between("Guide", Vector3(-0.029, 0.036, 0.026), Vector3(0.029, 0.036, 0.026), 0.004, _black)
+
+
+func _build_rudder_gudgeon() -> void:
+	_add_box("TransomPlate", Vector3(0.105, 0.070, 0.008), Vector3(0.0, 0.0, 0.0), _stainless)
+	for side in [-1.0, 1.0]:
+		_add_box(
+			"PortEar" if side < 0.0 else "StarboardEar",
+			Vector3(0.020, 0.040, 0.055),
+			Vector3(side * 0.031, 0.0, 0.028),
+			_stainless
+		)
+	_add_cylinder("PintleBarrel", 0.052, 0.009, Vector3(0.0, 0.0, 0.052), _stainless)
+	_add_cylinder("PintleOpening", 0.054, 0.004, Vector3(0.0, 0.0, 0.052), _soft_black)
+
+
 func _capsule_outline(half_length: float, half_width: float) -> PackedVector2Array:
 	var points := PackedVector2Array()
 	var end_center := half_length - half_width
@@ -466,7 +680,7 @@ func _add_cylinder(
 	cylinder.height = height
 	cylinder.bottom_radius = radius
 	cylinder.top_radius = radius if top_radius < 0.0 else top_radius
-	cylinder.radial_segments = 20
+	cylinder.radial_segments = 28
 	var instance := MeshInstance3D.new()
 	instance.name = part_name
 	instance.mesh = cylinder
