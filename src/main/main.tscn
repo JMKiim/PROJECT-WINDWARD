@@ -94,7 +94,7 @@ cull_mask = 3
 [node name="FirstPersonCamera" type="Camera3D" parent="CameraRig"]
 fov = 78.0
 cull_mask = 5
-near = 0.05
+near = 0.06
 
 [node name="HUD" type="CanvasLayer" parent="."]
 script = ExtResource("3_hud")

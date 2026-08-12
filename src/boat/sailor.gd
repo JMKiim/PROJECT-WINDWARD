@@ -498,8 +498,9 @@ func _configure_render_layers() -> void:
 	exterior_body.layers = EXTERIOR_RENDER_LAYER
 
 	# A second skinned instance is used only by the first-person camera. Its
-	# shader clips the head in animated model space, preventing the camera from
-	# looking through face polygons while preserving the connected torso/limbs.
+	# shader removes vertices weighted to the Head bone instead of cutting all
+	# geometry above a height plane or inside a camera radius. Raised hands and
+	# nearby arms therefore remain visible without rendering the face shell.
 	var first_person_body := MeshInstance3D.new()
 	first_person_body.name = "FirstPersonBody"
 	first_person_body.mesh = exterior_body.mesh
@@ -512,6 +513,10 @@ func _configure_render_layers() -> void:
 
 func _create_headless_body_material(source_body: MeshInstance3D) -> ShaderMaterial:
 	var source := source_body.mesh.surface_get_material(0) as StandardMaterial3D
+	var head_bind_index := _find_skin_bind_index(source_body.skin, &"Head")
+	if head_bind_index < 0:
+		push_error("First-person sailor requires a resolvable Head skin bind")
+		return _create_hidden_first_person_material()
 	var shader := Shader.new()
 	shader.code = """
 shader_type spatial;
@@ -520,17 +525,22 @@ render_mode cull_back, diffuse_burley, specular_schlick_ggx;
 uniform sampler2D albedo_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_texture : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D roughness_texture : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform float head_cut_height = 1.14;
-varying float sailor_model_y;
-varying vec3 sailor_world_position;
+uniform int head_bind_index = -1;
+uniform float head_weight_cutoff = 0.35;
+uniform bool head_mask_ready = false;
+varying float sailor_head_weight;
 
 void vertex() {
-	sailor_model_y = VERTEX.y;
-	sailor_world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	sailor_head_weight = 0.0;
+	for (int influence = 0; influence < 4; influence++) {
+		if (int(BONE_INDICES[influence]) == head_bind_index) {
+			sailor_head_weight += BONE_WEIGHTS[influence];
+		}
+	}
 }
 
 void fragment() {
-	if (sailor_model_y > head_cut_height || distance(sailor_world_position, CAMERA_POSITION_WORLD) < 0.30) {
+	if (!head_mask_ready || sailor_head_weight >= head_weight_cutoff) {
 		discard;
 	}
 	ALBEDO = texture(albedo_texture, UV).rgb;
@@ -544,7 +554,41 @@ void fragment() {
 		result.set_shader_parameter("albedo_texture", source.albedo_texture)
 		result.set_shader_parameter("normal_texture", source.normal_texture)
 		result.set_shader_parameter("roughness_texture", source.roughness_texture)
+	result.set_shader_parameter("head_bind_index", head_bind_index)
+	result.set_shader_parameter("head_mask_ready", true)
 	return result
+
+
+func _create_hidden_first_person_material() -> ShaderMaterial:
+	# A renamed or malformed Skin must never fail open by rendering the face shell
+	# around the lens in an exported build. Keep the error visible in logs while
+	# hiding this instance until the asset's Head bind is repaired.
+	var shader := Shader.new()
+	shader.code = """
+shader_type spatial;
+void fragment() {
+	discard;
+}
+"""
+	var result := ShaderMaterial.new()
+	result.shader = shader
+	return result
+
+
+func _find_skin_bind_index(skin: Skin, bind_name: StringName) -> int:
+	if not skin:
+		return -1
+	for bind_index in range(skin.get_bind_count()):
+		if skin.get_bind_name(bind_index) == bind_name:
+			return bind_index
+	# Some importers preserve only numeric Skeleton3D links. Fall back to the
+	# actual skeleton bone index so a harmless bind-name change remains robust.
+	var skeleton_bone_index := _skeleton.find_bone(String(bind_name)) if _skeleton else -1
+	if skeleton_bone_index >= 0:
+		for bind_index in range(skin.get_bind_count()):
+			if skin.get_bind_bone(bind_index) == skeleton_bone_index:
+				return bind_index
+	return -1
 
 
 func _configure_arm_ik() -> void:
@@ -667,17 +711,17 @@ func _create_sailing_clothing() -> void:
 	vest_material.albedo_color = Color(0.180, 0.215, 0.235)
 	vest_material.metallic = 0.0
 	vest_material.roughness = 0.88
-	vest_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	vest_material.cull_mode = BaseMaterial3D.CULL_BACK
 	var pocket_material := StandardMaterial3D.new()
 	pocket_material.albedo_color = Color(0.060, 0.075, 0.086)
 	pocket_material.metallic = 0.0
 	pocket_material.roughness = 0.92
-	pocket_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	pocket_material.cull_mode = BaseMaterial3D.CULL_BACK
 	var side_material := StandardMaterial3D.new()
 	side_material.albedo_color = Color(0.025, 0.034, 0.041)
 	side_material.metallic = 0.0
 	side_material.roughness = 0.94
-	side_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	side_material.cull_mode = BaseMaterial3D.CULL_BACK
 	var strap_material := StandardMaterial3D.new()
 	strap_material.albedo_color = Color(0.012, 0.017, 0.021)
 	strap_material.roughness = 0.96
@@ -847,12 +891,16 @@ func _add_panel_triangle(
 	c: Vector2,
 	c_z: float
 ) -> void:
+	# Godot treats clockwise triangles as front faces. Profiles are authored
+	# counter-clockwise for easy measurement, so reverse every emitted triangle
+	# here; this keeps the generated normals and back-face culling outward on all
+	# faces of the closed PFD panels.
 	surface.set_uv(Vector2(a.x, a.y))
 	surface.add_vertex(Vector3(a.x, a.y, a_z))
-	surface.set_uv(Vector2(b.x, b.y))
-	surface.add_vertex(Vector3(b.x, b.y, b_z))
 	surface.set_uv(Vector2(c.x, c.y))
 	surface.add_vertex(Vector3(c.x, c.y, c_z))
+	surface.set_uv(Vector2(b.x, b.y))
+	surface.add_vertex(Vector3(b.x, b.y, b_z))
 
 
 func _add_panel_quad(
