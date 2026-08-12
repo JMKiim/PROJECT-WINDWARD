@@ -1,0 +1,47 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+__pycache__/
+*.py[cod]
+tmp/
+temp/
+
+# Build and test output
+build/
+builds/
+dist/
+coverage/
+
+# Godot generated data
+.godot/
+
+# Local development and agent files
+/.agents/
+/.codex/
+/docs/
+/tests/
+/tools/
+
+# Local source/reference geometry
+# Licensed or user-provided CAD/mesh files guide reconstruction but are not
+# runtime assets and must not be published or imported by Godot.
+/reference_assets/
