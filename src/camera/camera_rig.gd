@@ -12,7 +12,13 @@ const MIN_TOP_DOWN_DISTANCE := 7.5
 const MAX_TOP_DOWN_DISTANCE := 32.5
 const TOP_DOWN_ZOOM_STEP := 2.5
 const TOP_DOWN_HEADING_FOLLOW_SPEED := 2.2
-const DEFAULT_LOOK_PITCH := deg_to_rad(-16.0)
+const TOP_DOWN_TRANSLATION_HALF_LIFE := 0.20
+const TOP_DOWN_MAX_LOOK_AHEAD := 1.2
+const TOP_DOWN_LOOK_AHEAD_FULL_SPEED := 5.5
+const TOP_DOWN_TELEPORT_DISTANCE := 8.0
+const TOP_DOWN_FOV := 54.0
+const FIRST_PERSON_FOV := 72.0
+const DEFAULT_LOOK_PITCH := deg_to_rad(-8.0)
 const FIRST_PERSON_NEAR_PLANE := 0.06
 const FIRST_PERSON_WAVE_ROTATION_GAIN := 0.30
 const CAMERA_PROCESS_PRIORITY := 10
@@ -33,6 +39,7 @@ var _look_pitch := DEFAULT_LOOK_PITCH
 var _top_down_distance := DEFAULT_TOP_DOWN_DISTANCE
 var _target_top_down_distance := DEFAULT_TOP_DOWN_DISTANCE
 var _top_down_follow_yaw := 0.0
+var _last_top_down_target_position := Vector3.ZERO
 
 
 func _enter_tree() -> void:
@@ -43,7 +50,16 @@ func _enter_tree() -> void:
 
 func _ready() -> void:
 	_top_down_follow_yaw = target.global_rotation.y
+	_last_top_down_target_position = target.global_position
+	top_down_camera.fov = TOP_DOWN_FOV
+	first_person_camera.fov = FIRST_PERSON_FOV
 	first_person_camera.near = FIRST_PERSON_NEAR_PLANE
+	var initial_top_down_basis := Basis(Vector3.UP, _top_down_follow_yaw)
+	top_down_camera.global_position = (
+		target.global_position
+		+ initial_top_down_basis * TOP_DOWN_DIRECTION * _top_down_distance
+	)
+	top_down_camera.look_at(target.global_position, Vector3.UP)
 	_sync_first_person_camera()
 	_apply_camera_mode()
 
@@ -53,32 +69,65 @@ func _process(delta: float) -> void:
 		first_person_enabled = not first_person_enabled
 		_apply_camera_mode()
 
+	var boat := target as WindwardBoat
 	var target_position := target.global_position
+	# Look-ahead uses the CharacterBody's authoritative movement velocity without
+	# letting presentation code initialize or mutate the sailing state.
+	var planar_velocity := boat.velocity
+	planar_velocity.y = 0.0
+	var planar_speed := planar_velocity.length()
+	var look_ahead_offset := Vector3.ZERO
+	if planar_speed > 0.0001:
+		look_ahead_offset = (
+			planar_velocity / planar_speed
+			* TOP_DOWN_MAX_LOOK_AHEAD
+			* clampf(planar_speed / TOP_DOWN_LOOK_AHEAD_FULL_SPEED, 0.0, 1.0)
+		)
+	var framing_position := target_position + look_ahead_offset
 	_top_down_distance = lerpf(
 		_top_down_distance,
 		_target_top_down_distance,
 		1.0 - exp(-9.0 * delta)
 	)
-	# Translation follows immediately, while heading is deliberately damped. This
-	# preserves the behind-the-boat view without snapping on every rudder input.
-	_top_down_follow_yaw = lerp_angle(
-		_top_down_follow_yaw,
-		target.global_rotation.y,
-		1.0 - exp(-TOP_DOWN_HEADING_FOLLOW_SPEED * delta)
+	var teleported := (
+		target_position.distance_to(_last_top_down_target_position)
+		> TOP_DOWN_TELEPORT_DISTANCE
 	)
+	if teleported:
+		# A reset or world warp must not leave the camera travelling across the map.
+		_top_down_follow_yaw = target.global_rotation.y
+	else:
+		# Heading retains its deliberate delay, independently of translation lag.
+		_top_down_follow_yaw = lerp_angle(
+			_top_down_follow_yaw,
+			target.global_rotation.y,
+			1.0 - exp(-TOP_DOWN_HEADING_FOLLOW_SPEED * delta)
+		)
 	var target_basis := Basis(Vector3.UP, _top_down_follow_yaw)
 	var desired_top_down := (
 		target_position
 		+ target_basis * TOP_DOWN_DIRECTION * _top_down_distance
 	)
-	top_down_camera.global_position = desired_top_down
-	top_down_camera.look_at(target_position, Vector3.UP)
-
-	var boat := target as WindwardBoat
-	var sailing_state := boat.get_sailing_state()
-	var speed_ratio := clampf(sailing_state.speed_mps / 5.5, 0.0, 1.0)
-	top_down_camera.fov = lerpf(54.0, 58.0, speed_ratio)
-	first_person_camera.fov = lerpf(76.0, 80.0, speed_ratio)
+	if teleported:
+		top_down_camera.global_position = desired_top_down
+	else:
+		var translation_weight := 1.0 - exp(
+			-log(2.0) * maxf(delta, 0.0) / TOP_DOWN_TRANSLATION_HALF_LIFE
+		)
+		# Feed forward the actual frame displacement before smoothing the orbit.
+		# Heading lag and translation are independent: using velocity * render delta
+		# produced frame-rate jitter, while disabling translation during a turn made
+		# the camera fall metres behind and then rush back toward the boat.
+		var feed_forward_position := top_down_camera.global_position
+		var frame_displacement := target_position - _last_top_down_target_position
+		frame_displacement.y = 0.0
+		feed_forward_position += frame_displacement
+		top_down_camera.global_position = feed_forward_position.lerp(
+			desired_top_down,
+			translation_weight
+		)
+	top_down_camera.look_at(framing_position, Vector3.UP)
+	_last_top_down_target_position = target_position
 
 	# The camera remains at the anatomical eye and preserves the sailor-relative
 	# tack/gaze transform. Only high-frequency wave rotation is presentation-only

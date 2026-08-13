@@ -6,19 +6,43 @@ const SITTING_IDLE := preload("res://src/boat/assets/sailor_sitting_idle.res")
 const CROUCH_IDLE := preload("res://src/boat/assets/sailor_crouch_idle.res")
 
 const BODY_HEIGHT_METERS := 1.75
+const SOURCE_BODY_HEIGHT_METERS := 1.819586
+const BODY_UNIFORM_SCALE := BODY_HEIGHT_METERS / SOURCE_BODY_HEIGHT_METERS
 const FIRST_PERSON_BODY_LAYER := 4
 const EXTERIOR_RENDER_LAYER := 2
 const SHARED_BODY_LAYERS := FIRST_PERSON_BODY_LAYER | EXTERIOR_RENDER_LAYER
 
-# The imported seated animation places the hips 0.36 m behind the rig origin.
-# These offsets put the pelvis on the side deck while the feet remain inboard.
-const POSE_LATERAL_CENTER := 0.34
-const POSE_AFT_CENTER := 0.22
+# The imported clip is a generic chair pose. Retarget its actual sagittal
+# centreline contact to the ILCA side deck instead of placing the whole rig by
+# an eye/camera offset.
+const SEAT_CONTACT_LATERAL := 0.56
+const SEAT_CONTACT_AFT := 0.62
+const SEAT_CONTACT_BELOW_HIPS := 0.10
+# Sitting_Idle's Hips origin is 19.611 mm to source-rig +X. The skinned body's
+# seated centreline is rig X=0, so the semantic glute contact cancels it.
+const SEATED_HIPS_LATERAL_OFFSET_SOURCE := -0.019611241
 const BODY_FORWARD_CORRECTION := PI
 const BODY_SEAT_YAW := deg_to_rad(42.0)
 const TACK_CROSSING_RATE := 1.65
 const TACK_CENTER_RISE := 0.10
 const SAILOR_PROCESS_PRIORITY := -10
+
+# A single Skeleton3D-X rotation preserves every Spine descendant's segment
+# length. Distributing the same correction through three joints shortened the
+# seated Hips-to-Eye chain from an adult 0.69 m to 0.62 m.
+const NEUTRAL_SPINE_PITCH := deg_to_rad(-20.0)
+
+# The padded hiking strap spans x +/-0.060 m and z 0.335..1.235 m. IK targets
+# are ankle origins; semantic instep/sole contacts are physical boat metres.
+const FOOT_TARGET_LATERAL := 0.035
+const FOOT_TARGET_FORWARD_Z := 0.64
+const FOOT_TARGET_AFT_Z := 0.90
+const FOOT_ANKLE_HEIGHT := 0.120
+const FOOT_INSTEP_BELOW_ANKLE := 0.054
+const FOOT_SOLE_BELOW_ANKLE := 0.075
+const FOOT_POLE_LATERAL := 0.22
+const FOOT_POLE_HEIGHT := 0.54
+const FOOT_POLE_AFT := 0.48
 
 # Hard anatomical neck limits. First-person horizontal look has a wider limit:
 # large turns are shared between the spine and neck instead of breaking either.
@@ -65,6 +89,11 @@ var _left_hand_anchor: Node3D
 var _right_hand_anchor: Node3D
 var _left_foot_anchor: Node3D
 var _right_foot_anchor: Node3D
+var _seat_contact_anchor: Node3D
+var _left_instep_anchor: Node3D
+var _right_instep_anchor: Node3D
+var _left_sole_anchor: Node3D
+var _right_sole_anchor: Node3D
 var _sheet_hand_anchor: Node3D
 var _tiller_hand_anchor: Node3D
 var _rudder_pivot: Node3D
@@ -73,7 +102,12 @@ var _tiller_grip: Node3D
 var _held_mainsheet: MeshInstance3D
 var _left_hand_target: Node3D
 var _right_hand_target: Node3D
+var _left_foot_target: Node3D
+var _right_foot_target: Node3D
+var _left_foot_pole: Node3D
+var _right_foot_pole: Node3D
 
+var _hips_bone := -1
 var _spine_bone := -1
 var _chest_bone := -1
 var _neck_bone := -1
@@ -115,11 +149,13 @@ func _ready() -> void:
 
 	_rig_root = SAILOR_RIG.instantiate() as Node3D
 	_rig_root.name = "SailorRig"
+	_rig_root.scale = Vector3.ONE * BODY_UNIFORM_SCALE
 	_pose_root.add_child(_rig_root)
 	_skeleton = _rig_root.get_node("Armature/GeneralSkeleton") as Skeleton3D
 	_animation_player = _rig_root.get_node("AnimationPlayer") as AnimationPlayer
 	_install_seated_pose()
 
+	_hips_bone = _skeleton.find_bone("Hips")
 	_spine_bone = _skeleton.find_bone("Spine")
 	_chest_bone = _skeleton.find_bone("Chest")
 	_neck_bone = _skeleton.find_bone("Neck")
@@ -128,6 +164,7 @@ func _ready() -> void:
 
 	_configure_render_layers()
 	_configure_arm_ik()
+	_configure_leg_ik()
 	_create_anatomical_anchors()
 	_capture_finger_base_pose()
 	_create_sailing_clothing()
@@ -137,6 +174,8 @@ func _ready() -> void:
 	_capture_animation_torso_pose()
 	_capture_base_head_from_chest()
 	_capture_stable_gaze_basis()
+	_apply_head_pose()
+	_update_leg_ik_targets()
 	_resolve_control_hands()
 	_update_control_ik_targets()
 	_apply_control_grip_pose()
@@ -159,7 +198,11 @@ func _process(delta: float) -> void:
 	_animation_player.advance(delta)
 	_capture_animation_torso_pose()
 	_apply_head_pose()
+	_update_leg_ik_targets()
 	_resolve_control_hands()
+	# Arm targets are authored in world space only after seat translation. They
+	# remain the last skeleton modifiers, so torso retargeting cannot pull a hand
+	# away from its tiller/sheet control.
 	_update_control_ik_targets()
 	_apply_control_grip_pose()
 	_update_held_mainsheet()
@@ -224,13 +267,11 @@ func _capture_stable_gaze_basis() -> void:
 
 
 func _apply_pose_side_transform() -> void:
+	# Spine has no source animation track. Remove the previous procedural pose
+	# before a tack/seek so the neutral Spine correction cannot accumulate.
+	_restore_animation_torso_pose()
 	var clamped_side := clampf(seat_side, -1.0, 1.0)
 	var crossing_amount := 1.0 - absf(clamped_side)
-	_pose_root.position = Vector3(
-		clamped_side * POSE_LATERAL_CENTER,
-		sin(crossing_amount * PI * 0.5) * TACK_CENTER_RISE,
-		POSE_AFT_CENTER
-	)
 	_pose_root.rotation = Vector3(
 		0.0,
 		BODY_FORWARD_CORRECTION + BODY_SEAT_YAW * clamped_side,
@@ -297,6 +338,10 @@ func _capture_animation_torso_pose() -> void:
 		return
 	for bone_index in [_spine_bone, _chest_bone, _upper_chest_bone]:
 		if bone_index >= 0:
+			# Sitting/Crouch have no Spine track. Retain its first pure source
+			# sample instead of recapturing the previous procedural correction.
+			if bone_index == _spine_bone and _animation_torso_rotations.has(bone_index):
+				continue
 			_animation_torso_rotations[bone_index] = _skeleton.get_bone_pose_rotation(bone_index)
 
 
@@ -317,13 +362,20 @@ func _apply_torso_pose() -> void:
 	if not is_instance_valid(_skeleton):
 		return
 	var torso_chain := [
-		[_spine_bone, 0.24],
-		[_chest_bone, 0.34],
-		[_upper_chest_bone, 0.42],
+		[_chest_bone, 0.42],
+		[_upper_chest_bone, 0.58],
 	]
 	# Restore the current animation sample first; camera synchronization can call
 	# this more than once in one frame and must never accumulate extra twist.
 	_restore_animation_torso_pose()
+	# Rotate the whole Spine descendant subtree rigidly in Skeleton3D space.
+	# Chest and UpperChest keep the imported animation; only later gaze deltas
+	# are distributed between them.
+	var spine_basis := _skeleton.get_bone_global_pose(_spine_bone).basis.orthonormalized()
+	_set_bone_global_basis(
+		_spine_bone,
+		(Basis(Vector3.RIGHT, NEUTRAL_SPINE_PITCH) * spine_basis).orthonormalized()
+	)
 
 	for entry in torso_chain:
 		var bone_index: int = entry[0]
@@ -337,19 +389,23 @@ func _apply_torso_pose() -> void:
 			* Basis(current_basis.x.normalized(), -flex_share)
 			* current_basis
 		).orthonormalized()
-		var parent_index := _skeleton.get_bone_parent(bone_index)
-		var parent_basis := Basis.IDENTITY
-		if parent_index >= 0:
-			parent_basis = _skeleton.get_bone_global_pose(parent_index).basis.orthonormalized()
-		var rest_basis := _skeleton.get_bone_rest(bone_index).basis.orthonormalized()
-		var local_pose_basis := (
-			(parent_basis * rest_basis).inverse() * desired_basis
-		).orthonormalized()
-		_skeleton.set_bone_pose_rotation(
-			bone_index,
-			local_pose_basis.get_rotation_quaternion()
-		)
-		_skeleton.force_update_bone_child_transform(bone_index)
+		_set_bone_global_basis(bone_index, desired_basis)
+
+
+func _set_bone_global_basis(bone_index: int, desired_basis: Basis) -> void:
+	var parent_index := _skeleton.get_bone_parent(bone_index)
+	var parent_basis := Basis.IDENTITY
+	if parent_index >= 0:
+		parent_basis = _skeleton.get_bone_global_pose(parent_index).basis.orthonormalized()
+	var rest_basis := _skeleton.get_bone_rest(bone_index).basis.orthonormalized()
+	var local_pose_basis := (
+		(parent_basis * rest_basis).inverse() * desired_basis
+	).orthonormalized()
+	_skeleton.set_bone_pose_rotation(
+		bone_index,
+		local_pose_basis.get_rotation_quaternion()
+	)
+	_skeleton.force_update_bone_child_transform(bone_index)
 
 
 func _apply_head_pose() -> void:
@@ -382,6 +438,10 @@ func _apply_head_pose() -> void:
 	_skeleton.set_bone_pose_rotation(_head_bone, local_pose_basis.get_rotation_quaternion())
 	_skeleton.force_update_bone_child_transform(_head_bone)
 	_update_eye_anchor()
+	# Position is solved only after animation, neutral Spine, and final Head have
+	# been evaluated. Hand/leg targets are updated later in the same frame.
+	_update_seat_contact_anchor()
+	_solve_seat_contact()
 
 
 func eye_global_position() -> Vector3:
@@ -482,6 +542,26 @@ func left_foot_global_position() -> Vector3:
 
 func right_foot_global_position() -> Vector3:
 	return _right_foot_anchor.global_position
+
+
+func seat_contact_global_position() -> Vector3:
+	return _seat_contact_anchor.global_position
+
+
+func left_instep_global_position() -> Vector3:
+	return _left_instep_anchor.global_position
+
+
+func right_instep_global_position() -> Vector3:
+	return _right_instep_anchor.global_position
+
+
+func left_sole_global_position() -> Vector3:
+	return _left_sole_anchor.global_position
+
+
+func right_sole_global_position() -> Vector3:
+	return _right_sole_anchor.global_position
 
 
 func hands_are_swapped() -> bool:
@@ -602,8 +682,15 @@ func _configure_arm_ik() -> void:
 	right_pole.position = RIGHT_ELBOW_POLE
 	(_skeleton.get_node("L_ArmIK3D") as Node).set("influence", 1.0)
 	(_skeleton.get_node("R_ArmIK3D") as Node).set("influence", 1.0)
-	(_skeleton.get_node("L_LegIK3D") as Node).set("influence", 0.0)
-	(_skeleton.get_node("R_LegIK3D") as Node).set("influence", 0.0)
+
+
+func _configure_leg_ik() -> void:
+	_left_foot_target = _rig_root.get_node("L_foot_target") as Node3D
+	_right_foot_target = _rig_root.get_node("R_foot_target") as Node3D
+	_left_foot_pole = _rig_root.get_node("L_foot_pole") as Node3D
+	_right_foot_pole = _rig_root.get_node("R_foot_pole") as Node3D
+	(_skeleton.get_node("L_LegIK3D") as Node).set("influence", 1.0)
+	(_skeleton.get_node("R_LegIK3D") as Node).set("influence", 1.0)
 
 
 func _create_anatomical_anchors() -> void:
@@ -615,10 +702,30 @@ func _create_anatomical_anchors() -> void:
 	_right_hand_anchor.position = Vector3(-0.015, 0.046, 0.033)
 	_left_foot_anchor = _create_bone_anchor("LeftFootAnchor", "LeftFoot")
 	_right_foot_anchor = _create_bone_anchor("RightFootAnchor", "RightFoot")
+	_seat_contact_anchor = Node3D.new()
+	_seat_contact_anchor.name = "SeatContactAnchor"
+	_skeleton.add_child(_seat_contact_anchor)
+	_left_instep_anchor = Node3D.new()
+	_left_instep_anchor.name = "LeftInstepContactAnchor"
+	_skeleton.add_child(_left_instep_anchor)
+	_right_instep_anchor = Node3D.new()
+	_right_instep_anchor.name = "RightInstepContactAnchor"
+	_skeleton.add_child(_right_instep_anchor)
+	_left_sole_anchor = Node3D.new()
+	_left_sole_anchor.name = "LeftSoleAnchor"
+	_skeleton.add_child(_left_sole_anchor)
+	_right_sole_anchor = Node3D.new()
+	_right_sole_anchor.name = "RightSoleAnchor"
+	_skeleton.add_child(_right_sole_anchor)
 	_eye_anchor = Node3D.new()
 	_eye_anchor.name = "EyeAnchor"
 	_skeleton.add_child(_eye_anchor)
 	_update_eye_anchor()
+	_update_seat_contact_anchor()
+	_update_foot_contact_anchors()
+	# BoneAttachment3D updates at skeleton_updated after TwoBoneIK. These
+	# semantic contacts therefore sample final modified feet, not pre-IK bones.
+	_skeleton.skeleton_updated.connect(_update_foot_contact_anchors)
 
 
 func _capture_finger_base_pose() -> void:
@@ -682,6 +789,77 @@ func _update_eye_anchor() -> void:
 	_eye_anchor.transform = head_pose * Transform3D(
 		Basis(Vector3.UP, PI),
 		Vector3(0.0, 0.115, 0.145)
+	)
+
+
+func _update_seat_contact_anchor() -> void:
+	if not is_instance_valid(_seat_contact_anchor) or _hips_bone < 0:
+		return
+	var hips_pose := _skeleton.get_bone_global_pose(_hips_bone)
+	var source_contact_in_skeleton := (
+		hips_pose.origin
+		+ Vector3(SEATED_HIPS_LATERAL_OFFSET_SOURCE, 0.0, 0.0)
+	)
+	var contact_world := _skeleton.to_global(source_contact_in_skeleton)
+	var contact_boat := _boat.to_local(contact_world)
+	contact_boat.y -= SEAT_CONTACT_BELOW_HIPS
+	_seat_contact_anchor.global_position = _boat.to_global(contact_boat)
+
+
+func _solve_seat_contact() -> void:
+	if not is_instance_valid(_seat_contact_anchor):
+		return
+	var side := clampf(seat_side, -1.0, 1.0)
+	var crossing_amount := 1.0 - absf(side)
+	var hull := _boat.get_node_or_null("Hull") as IlcaHull
+	var deck_sample_x := signf(side) * SEAT_CONTACT_LATERAL
+	if is_zero_approx(deck_sample_x):
+		deck_sample_x = SEAT_CONTACT_LATERAL
+	var target_y := (
+		hull.deck_y_at(deck_sample_x, SEAT_CONTACT_AFT)
+		if is_instance_valid(hull)
+		else 0.32
+	)
+	target_y += sin(crossing_amount * PI * 0.5) * TACK_CENTER_RISE
+	var target_global := _boat.to_global(Vector3(
+		side * SEAT_CONTACT_LATERAL,
+		target_y,
+		SEAT_CONTACT_AFT
+	))
+	_pose_root.global_position += target_global - _seat_contact_anchor.global_position
+	_update_seat_contact_anchor()
+
+
+func _update_foot_contact_anchors() -> void:
+	_update_foot_contact_anchor_pair(
+		_left_foot_anchor,
+		_left_instep_anchor,
+		_left_sole_anchor
+	)
+	_update_foot_contact_anchor_pair(
+		_right_foot_anchor,
+		_right_instep_anchor,
+		_right_sole_anchor
+	)
+
+
+func _update_foot_contact_anchor_pair(
+	foot_anchor: Node3D,
+	instep_anchor: Node3D,
+	sole_anchor: Node3D
+) -> void:
+	if (
+		not is_instance_valid(foot_anchor)
+		or not is_instance_valid(instep_anchor)
+		or not is_instance_valid(sole_anchor)
+	):
+		return
+	var ankle_boat := _boat.to_local(foot_anchor.global_position)
+	instep_anchor.global_position = _boat.to_global(
+		ankle_boat + Vector3.DOWN * FOOT_INSTEP_BELOW_ANKLE
+	)
+	sole_anchor.global_position = _boat.to_global(
+		ankle_boat + Vector3.DOWN * FOOT_SOLE_BELOW_ANKLE
 	)
 
 
@@ -950,6 +1128,39 @@ func _resolve_control_hands() -> void:
 		_sheet_hand_anchor = _left_hand_anchor
 
 
+func _update_leg_ik_targets() -> void:
+	if (
+		not is_instance_valid(_left_foot_target)
+		or not is_instance_valid(_right_foot_target)
+		or not is_instance_valid(_left_foot_pole)
+		or not is_instance_valid(_right_foot_pole)
+	):
+		return
+	var side_ratio := clampf((seat_side + 1.0) * 0.5, 0.0, 1.0)
+	var left_target_z := lerpf(FOOT_TARGET_FORWARD_Z, FOOT_TARGET_AFT_Z, side_ratio)
+	var right_target_z := lerpf(FOOT_TARGET_AFT_Z, FOOT_TARGET_FORWARD_Z, side_ratio)
+	_left_foot_target.global_position = _boat.to_global(Vector3(
+		-FOOT_TARGET_LATERAL,
+		FOOT_ANKLE_HEIGHT,
+		left_target_z
+	))
+	_right_foot_target.global_position = _boat.to_global(Vector3(
+		FOOT_TARGET_LATERAL,
+		FOOT_ANKLE_HEIGHT,
+		right_target_z
+	))
+	_left_foot_pole.global_position = _boat.to_global(Vector3(
+		-FOOT_POLE_LATERAL,
+		FOOT_POLE_HEIGHT,
+		FOOT_POLE_AFT
+	))
+	_right_foot_pole.global_position = _boat.to_global(Vector3(
+		FOOT_POLE_LATERAL,
+		FOOT_POLE_HEIGHT,
+		FOOT_POLE_AFT
+	))
+
+
 func _update_hand_exchange_state() -> void:
 	var side_delta := seat_side - _last_hand_exchange_side
 	if absf(side_delta) > 0.0001:
@@ -1008,24 +1219,43 @@ func _update_control_ik_targets() -> void:
 		return
 	_resolve_control_hands()
 	var grip_position := _tiller_grip.global_position
-	var left_default := _rig_root.to_global(LEFT_HAND_TARGET)
-	var right_default := _rig_root.to_global(RIGHT_HAND_TARGET)
-	var left_goal := grip_position if _tiller_is_left else left_default
-	var right_goal := right_default if _tiller_is_left else grip_position
-	# The incoming sheet hand reaches the same physical extension before the role
-	# flag changes. At the midpoint both targets are coincident, so neither arm
-	# teleports when the new hand assumes the tiller.
-	left_goal = left_goal.lerp(grip_position, _hand_exchange_amount)
-	right_goal = right_goal.lerp(grip_position, _hand_exchange_amount)
+	var left_palm_goal := grip_position
+	var right_palm_goal := grip_position
 	if _hand_exchange_amount > 0.95:
 		# Two hands cannot occupy an identical palm centre. Offset them a few
 		# centimetres along the extension, exactly as a real behind-the-back
 		# handover overlaps adjacent grips before the old hand releases.
 		var grip_axis := -_tiller_extension_pivot.global_basis.z.normalized()
-		left_goal += grip_axis * 0.026
-		right_goal -= grip_axis * 0.026
+		left_palm_goal += grip_axis * 0.026
+		right_palm_goal -= grip_axis * 0.026
+	# TwoBoneIK targets the Hand bone origin (the wrist), while gameplay and
+	# contact tests use the palm-centre BoneAttachment. Compensate the current
+	# wrist-to-palm vector so the visible hand, not the hidden wrist pivot, lands
+	# on the extension. The offset is sampled independently for mirrored hands.
+	var left_grip_target := _ik_target_for_palm(_left_hand_anchor, left_palm_goal)
+	var right_grip_target := _ik_target_for_palm(_right_hand_anchor, right_palm_goal)
+	var left_default := _rig_root.to_global(LEFT_HAND_TARGET)
+	var right_default := _rig_root.to_global(RIGHT_HAND_TARGET)
+	var left_goal := left_grip_target if _tiller_is_left else left_default
+	var right_goal := right_default if _tiller_is_left else right_grip_target
+	# The incoming sheet hand reaches the same physical extension before the role
+	# flag changes. At the midpoint both targets are coincident, so neither arm
+	# teleports when the new hand assumes the tiller.
+	left_goal = left_goal.lerp(left_grip_target, _hand_exchange_amount)
+	right_goal = right_goal.lerp(right_grip_target, _hand_exchange_amount)
 	_left_hand_target.global_position = left_goal
 	_right_hand_target.global_position = right_goal
+
+
+func _ik_target_for_palm(hand_anchor: Node3D, palm_goal: Vector3) -> Vector3:
+	if not is_instance_valid(hand_anchor):
+		return palm_goal
+	var wrist_attachment := hand_anchor.get_parent() as Node3D
+	if not is_instance_valid(wrist_attachment):
+		return palm_goal
+	return palm_goal - (
+		hand_anchor.global_position - wrist_attachment.global_position
+	)
 
 
 func hand_exchange_amount() -> float:
