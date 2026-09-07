@@ -1,0 +1,54 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+__pycache__/
+*.py[cod]
+tmp/
+temp/
+
+# Build and test output
+build/
+builds/
+dist/
+coverage/
+
+# Godot generated data
+.godot/
+
+# Local project files
+/docs/
+/tests/
+/tools/
+/WORKSPACE_RULES.md
+
+# Local source/reference geometry
+# Licensed or user-provided CAD/mesh files guide reconstruction but are not
+# runtime assets and must not be published or imported by Godot.
+/reference_assets/
+
+# Local reference images
+/Measurement_Diagram_Hull_2022.jpg
+/Measurement_Diagram_Hull_2022.jpg.import
+/Parts-of-the-ILCA-Dinghy.png
+/Parts-of-the-ILCA-Dinghy.png.import
+/Zim ILCA Cockpit.jpeg
+/Zim ILCA Cockpit.jpeg.import

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="850" height="300" viewBox="0 0 850 300">
+  <!-- Godot's SVG runtime does not support clip paths consistently, so the
+       red upper halves are explicit vector shapes over the gray wordmark. -->
+  <g transform="skewX(-5)" fill="#85898c">
+    <path d="M70 35 H158 L118 265 H30 Z"/>
+    <path d="M180 35 H268 L238 205 H360 L350 265 H140 Z"/>
+    <path d="M590 65 L575 127 C546 105 514 94 481 94 C425 94 392 121 381 171 C369 222 390 241 442 241 C480 241 515 230 550 207 L538 269 C501 282 460 288 421 288 C326 288 292 242 311 164 C331 82 386 35 481 35 C523 35 560 45 590 65 Z"/>
+    <path fill-rule="evenodd" d="M615 265 L708 35 H800 L850 265 H765 L755 207 H683 L653 265 Z M705 150 H745 L733 83 Z"/>
+  </g>
+  <g transform="skewX(-5)" fill="#e3343d">
+    <path d="M70 35 H158 L138 150 H50 Z"/>
+    <path d="M180 35 H268 L248 150 H160 Z"/>
+    <path d="M590 65 L575 127 C546 105 514 94 481 94 C425 94 400 115 388 150 H307 C330 78 387 35 481 35 C523 35 560 45 590 65 Z"/>
+    <path fill-rule="evenodd" d="M661 150 L708 35 H800 L825 150 Z M705 150 H745 L733 83 Z"/>
+  </g>
+</svg>

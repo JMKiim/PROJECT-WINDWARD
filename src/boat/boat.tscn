@@ -1,0 +1,484 @@
+[gd_scene load_steps=33 format=3]
+
+[ext_resource type="Script" path="res://src/boat/boat_controller.gd" id="1_controller"]
+[ext_resource type="Script" path="res://src/boat/ilca_hull.gd" id="2_hull"]
+[ext_resource type="Script" path="res://src/boat/ilca_sail.gd" id="3_sail"]
+[ext_resource type="Script" path="res://src/boat/ilca_foil.gd" id="4_foil"]
+[ext_resource type="Script" path="res://src/boat/ilca_rigging.gd" id="5_rigging"]
+[ext_resource type="Script" path="res://src/boat/sailor.gd" id="6_sailor"]
+[ext_resource type="Texture2D" path="res://src/boat/ilca7_mark.svg" id="7_class_mark"]
+[ext_resource type="Script" path="res://src/boat/ilca_hardware_part.gd" id="8_hardware"]
+[ext_resource type="Texture2D" path="res://src/boat/ilca_hull_mark.svg" id="9_hull_mark"]
+
+[sub_resource type="BoxShape3D" id="HullCollision"]
+size = Vector3(1.37, 0.42, 4.23)
+
+[sub_resource type="StandardMaterial3D" id="MastAluminumMaterial"]
+albedo_color = Color(0.56, 0.585, 0.595, 1)
+metallic = 0.82
+roughness = 0.3
+
+[sub_resource type="StandardMaterial3D" id="UpperMastMaterial"]
+albedo_color = Color(0.38, 0.405, 0.415, 1)
+metallic = 0.74
+roughness = 0.32
+
+[sub_resource type="StandardMaterial3D" id="BoomMaterial"]
+albedo_color = Color(0.55, 0.575, 0.585, 1)
+metallic = 0.82
+roughness = 0.28
+
+[sub_resource type="StandardMaterial3D" id="BlackPlasticMaterial"]
+albedo_color = Color(0.035, 0.04, 0.042, 1)
+roughness = 0.58
+
+[sub_resource type="StandardMaterial3D" id="FoilMaterial"]
+albedo_color = Color(0.91, 0.925, 0.9, 1)
+roughness = 0.4
+
+[sub_resource type="StandardMaterial3D" id="DeckHardwareMaterial"]
+albedo_color = Color(0.055, 0.062, 0.065, 1)
+metallic = 0.25
+roughness = 0.42
+
+[sub_resource type="StandardMaterial3D" id="StainlessHardwareMaterial"]
+albedo_color = Color(0.56, 0.59, 0.61, 1)
+metallic = 0.88
+roughness = 0.22
+
+[sub_resource type="StandardMaterial3D" id="PlaqueMaterial"]
+albedo_color = Color(0.12, 0.31, 0.56, 1)
+metallic = 0.48
+roughness = 0.34
+cull_mode = 2
+
+[sub_resource type="CylinderMesh" id="LowerMastMesh"]
+top_radius = 0.047
+bottom_radius = 0.057
+height = 2.865
+radial_segments = 40
+rings = 16
+
+[sub_resource type="CylinderMesh" id="UpperMastMesh"]
+top_radius = 0.033
+bottom_radius = 0.047
+height = 3.595
+radial_segments = 40
+rings = 18
+
+[sub_resource type="CylinderMesh" id="BoomMesh"]
+top_radius = 0.028
+bottom_radius = 0.031
+height = 2.74
+radial_segments = 40
+rings = 14
+
+[sub_resource type="CylinderMesh" id="MastJointSleeveMesh"]
+top_radius = 0.050
+bottom_radius = 0.050
+height = 0.070
+radial_segments = 40
+
+[sub_resource type="CylinderMesh" id="MastPlugMesh"]
+top_radius = 0.034
+bottom_radius = 0.034
+height = 0.045
+radial_segments = 32
+
+[sub_resource type="CylinderMesh" id="BoomPlugMesh"]
+top_radius = 0.030
+bottom_radius = 0.030
+height = 0.060
+radial_segments = 32
+
+[sub_resource type="CylinderMesh" id="TillerExtensionMesh"]
+top_radius = 0.014
+bottom_radius = 0.017
+height = 0.86
+radial_segments = 20
+
+[sub_resource type="BoxMesh" id="ControlPlateMesh"]
+size = Vector3(0.28, 0.012, 0.11)
+
+[sub_resource type="BoxMesh" id="DeckBlockPlateMesh"]
+size = Vector3(0.24, 0.010, 0.075)
+
+[sub_resource type="QuadMesh" id="WorldSailingPlaqueMesh"]
+material = SubResource("PlaqueMaterial")
+size = Vector2(0.12, 0.075)
+
+[sub_resource type="CylinderMesh" id="MastCollarMesh"]
+top_radius = 0.088
+bottom_radius = 0.088
+height = 0.035
+radial_segments = 16
+
+[sub_resource type="CylinderMesh" id="CockpitDrainMesh"]
+top_radius = 0.022
+bottom_radius = 0.024
+height = 0.018
+radial_segments = 20
+
+[sub_resource type="StandardMaterial3D" id="SailButtonMaterial"]
+albedo_color = Color(0.96, 0.29, 0.035, 1)
+roughness = 0.55
+cull_mode = 2
+
+[sub_resource type="QuadMesh" id="SailButtonMesh"]
+material = SubResource("SailButtonMaterial")
+size = Vector2(0.07, 0.07)
+
+[node name="Boat" type="CharacterBody3D"]
+script = ExtResource("1_controller")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+position = Vector3(0, 0.14, 0)
+shape = SubResource("HullCollision")
+
+[node name="Hull" type="MeshInstance3D" parent="."]
+script = ExtResource("2_hull")
+
+[node name="Daggerboard" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.26, -0.27)
+script = ExtResource("4_foil")
+span = 0.70
+root_chord = 0.341
+tip_chord = 0.135
+maximum_thickness = 0.033
+aft_sweep = 0.0
+
+[node name="DaggerboardHead" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.18, -0.27)
+script = ExtResource("8_hardware")
+part_kind = 5
+
+[node name="DaggerboardHandle" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.255, -0.27)
+script = ExtResource("8_hardware")
+part_kind = 6
+
+[node name="RudderPivot" type="Node3D" parent="."]
+position = Vector3(0, 0, 2.171)
+
+[node name="UpperRudderGudgeon" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.225, 2.119)
+script = ExtResource("8_hardware")
+part_kind = 20
+
+[node name="LowerRudderGudgeon" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.105, 2.119)
+script = ExtResource("8_hardware")
+part_kind = 20
+
+[node name="RudderBladePivot" type="Node3D" parent="RudderPivot"]
+position = Vector3(0, 0.155, 0.065)
+rotation_degrees = Vector3(-12, 0, 0)
+
+[node name="RudderBlade" type="MeshInstance3D" parent="RudderPivot/RudderBladePivot"]
+position = Vector3(0, -0.300, 0.080)
+script = ExtResource("4_foil")
+foil_kind = 1
+span = 0.635
+root_chord = 0.203
+tip_chord = 0.066
+maximum_thickness = 0.020
+aft_sweep = 0.015
+
+[node name="RudderHead" type="MeshInstance3D" parent="RudderPivot"]
+position = Vector3(0, 0.18, -0.031)
+script = ExtResource("8_hardware")
+part_kind = 15
+
+[node name="Tiller" type="MeshInstance3D" parent="RudderPivot"]
+position = Vector3(0, 0.331476, -0.489529)
+rotation_degrees = Vector3(2.512, 0, 0)
+script = ExtResource("8_hardware")
+part_kind = 16
+
+[node name="TillerExtensionPivot" type="Node3D" parent="RudderPivot"]
+position = Vector3(0, 0.352952, -0.979058)
+
+[node name="TillerJoint" type="MeshInstance3D" parent="RudderPivot/TillerExtensionPivot"]
+script = ExtResource("8_hardware")
+part_kind = 17
+
+[node name="TillerExtension" type="MeshInstance3D" parent="RudderPivot/TillerExtensionPivot"]
+mesh = SubResource("TillerExtensionMesh")
+material_override = SubResource("DeckHardwareMaterial")
+visible = false
+
+[node name="TillerGrip" type="Node3D" parent="RudderPivot/TillerExtensionPivot"]
+position = Vector3(0, 0, -0.60)
+
+[node name="HikingStrap" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.075, 0.82)
+script = ExtResource("8_hardware")
+part_kind = 21
+
+[node name="HikingStrapForwardPlate" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.080, 0.275)
+script = ExtResource("8_hardware")
+part_kind = 22
+
+[node name="PortCockpitRail" type="MeshInstance3D" parent="."]
+position = Vector3(-0.395, 0.20, 0.65)
+script = ExtResource("8_hardware")
+part_kind = 7
+
+[node name="StarboardCockpitRail" type="MeshInstance3D" parent="."]
+position = Vector3(0.395, 0.20, 0.65)
+script = ExtResource("8_hardware")
+part_kind = 7
+
+[node name="ControlPlate" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.350, -0.50)
+mesh = SubResource("ControlPlateMesh")
+material_override = SubResource("StainlessHardwareMaterial")
+
+[node name="PortControlCleat" type="MeshInstance3D" parent="."]
+position = Vector3(-0.065, 0.360, -0.50)
+rotation_degrees = Vector3(0, -8, 0)
+script = ExtResource("8_hardware")
+part_kind = 8
+
+[node name="StarboardControlCleat" type="MeshInstance3D" parent="."]
+position = Vector3(0.065, 0.360, -0.50)
+rotation_degrees = Vector3(0, 8, 0)
+script = ExtResource("8_hardware")
+part_kind = 8
+
+[node name="DeckBlockPlate" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.350, -0.65)
+mesh = SubResource("DeckBlockPlateMesh")
+material_override = SubResource("StainlessHardwareMaterial")
+
+[node name="PortDeckBlock" type="MeshInstance3D" parent="."]
+position = Vector3(-0.055, 0.385, -0.65)
+rotation_degrees = Vector3(0, -12, 90)
+script = ExtResource("8_hardware")
+part_kind = 3
+
+[node name="StarboardDeckBlock" type="MeshInstance3D" parent="."]
+position = Vector3(0.055, 0.385, -0.65)
+rotation_degrees = Vector3(0, 12, 90)
+script = ExtResource("8_hardware")
+part_kind = 3
+
+[node name="SelfBailer" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.043, 1.04)
+script = ExtResource("8_hardware")
+part_kind = 9
+
+[node name="RatchetBlock" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.105, 0.24)
+script = ExtResource("8_hardware")
+part_kind = 0
+
+[node name="DaggerboardCase" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.058, -0.27)
+script = ExtResource("8_hardware")
+part_kind = 4
+
+[node name="TravellerBlock" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.332, 1.46)
+rotation_degrees = Vector3(0, 0, 90)
+script = ExtResource("8_hardware")
+part_kind = 2
+
+[node name="PortTravellerFairlead" type="MeshInstance3D" parent="."]
+position = Vector3(-0.46, 0.292, 1.54)
+rotation_degrees = Vector3(0, 90, 0)
+script = ExtResource("8_hardware")
+part_kind = 18
+
+[node name="StarboardTravellerFairlead" type="MeshInstance3D" parent="."]
+position = Vector3(0.46, 0.292, 1.54)
+rotation_degrees = Vector3(0, 90, 0)
+script = ExtResource("8_hardware")
+part_kind = 18
+
+[node name="TravellerCleat" type="MeshInstance3D" parent="."]
+position = Vector3(0.37, 0.292, 1.665)
+rotation_degrees = Vector3(0, 12, 0)
+script = ExtResource("8_hardware")
+part_kind = 19
+
+[node name="PortHikingStrapEye" type="MeshInstance3D" parent="."]
+position = Vector3(-0.18, 0.15, 1.405)
+rotation_degrees = Vector3(-90, 0, 0)
+script = ExtResource("8_hardware")
+part_kind = 10
+
+[node name="StarboardHikingStrapEye" type="MeshInstance3D" parent="."]
+position = Vector3(0.18, 0.15, 1.405)
+rotation_degrees = Vector3(-90, 0, 0)
+script = ExtResource("8_hardware")
+part_kind = 10
+
+[node name="WorldSailingPlaque" type="MeshInstance3D" parent="."]
+position = Vector3(-0.075, 0.205, 1.418)
+rotation_degrees = Vector3(0, 180, 0)
+mesh = SubResource("WorldSailingPlaqueMesh")
+
+[node name="CockpitDrainBung" type="MeshInstance3D" parent="."]
+position = Vector3(0.075, 0.095, 1.405)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("CockpitDrainMesh")
+material_override = SubResource("DeckHardwareMaterial")
+
+[node name="PortHullMark" type="Sprite3D" parent="."]
+position = Vector3(-0.569, 0.222, 1.72)
+rotation_degrees = Vector3(0, -90, 0)
+pixel_size = 0.00022
+texture = ExtResource("9_hull_mark")
+double_sided = false
+cast_shadow = 0
+
+[node name="StarboardHullMark" type="Sprite3D" parent="."]
+position = Vector3(0.569, 0.222, 1.72)
+rotation_degrees = Vector3(0, 90, 0)
+pixel_size = 0.00022
+texture = ExtResource("9_hull_mark")
+double_sided = false
+cast_shadow = 0
+
+[node name="LowerMast" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.7725, -0.81)
+mesh = SubResource("LowerMastMesh")
+material_override = SubResource("MastAluminumMaterial")
+
+[node name="LowerMastBasePlug" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.350, -0.81)
+mesh = SubResource("MastPlugMesh")
+material_override = SubResource("BlackPlasticMaterial")
+
+[node name="MastCollar" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.344, -0.81)
+mesh = SubResource("MastCollarMesh")
+material_override = SubResource("DeckHardwareMaterial")
+
+[node name="UpperMast" type="MeshInstance3D" parent="."]
+position = Vector3(0, 4.6975, -0.81)
+mesh = SubResource("UpperMastMesh")
+material_override = SubResource("UpperMastMaterial")
+
+[node name="MastJointSleeve" type="MeshInstance3D" parent="."]
+position = Vector3(0, 3.170, -0.81)
+mesh = SubResource("MastJointSleeveMesh")
+material_override = SubResource("BlackPlasticMaterial")
+
+[node name="UpperMastTopPlug" type="MeshInstance3D" parent="."]
+position = Vector3(0, 6.490, -0.81)
+mesh = SubResource("MastPlugMesh")
+material_override = SubResource("BlackPlasticMaterial")
+
+[node name="SailPivot" type="Node3D" parent="."]
+position = Vector3(0, 0, -0.81)
+
+[node name="BoomPivot" type="Node3D" parent="SailPivot"]
+position = Vector3(0, 1.21, 0)
+rotation_degrees = Vector3(-6, 0, 0)
+
+[node name="Boom" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, 0, 1.37)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("BoomMesh")
+material_override = SubResource("BoomMaterial")
+
+[node name="BoomInboardPlug" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, 0, 0.030)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("BoomPlugMesh")
+material_override = SubResource("BlackPlasticMaterial")
+
+[node name="BoomEndFitting" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, 0, 2.680)
+script = ExtResource("8_hardware")
+part_kind = 14
+
+[node name="Gooseneck" type="MeshInstance3D" parent="SailPivot"]
+position = Vector3(0, 1.21, 0.0)
+script = ExtResource("8_hardware")
+part_kind = 11
+
+[node name="TackGrommet" type="MeshInstance3D" parent="SailPivot"]
+position = Vector3(0, 1.27, 0)
+script = ExtResource("8_hardware")
+part_kind = 12
+
+[node name="ClewStrap" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, 0.060, 2.62)
+script = ExtResource("8_hardware")
+part_kind = 13
+
+[node name="ClewGrommet" type="Node3D" parent="SailPivot"]
+position = Vector3(0, 1.57, 2.70)
+
+[node name="VangBlock" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, -0.08, 0.48)
+script = ExtResource("8_hardware")
+part_kind = 1
+
+[node name="VangLowerBlock" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.365, -0.78)
+rotation_degrees = Vector3(0, 0, 90)
+script = ExtResource("8_hardware")
+part_kind = 3
+
+[node name="ForwardBoomBlock" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, -0.08, 1.12)
+script = ExtResource("8_hardware")
+part_kind = 1
+
+[node name="AftBoomBlock" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, -0.08, 2.18)
+script = ExtResource("8_hardware")
+part_kind = 1
+has_becket = true
+
+[node name="BoomEyeStrap" type="MeshInstance3D" parent="SailPivot/BoomPivot"]
+position = Vector3(0, -0.035, 1.65)
+rotation_degrees = Vector3(0, 0, 180)
+script = ExtResource("8_hardware")
+part_kind = 10
+
+[node name="Sail" type="MeshInstance3D" parent="SailPivot"]
+cast_shadow = 0
+script = ExtResource("3_sail")
+
+[node name="ClassMark" type="Sprite3D" parent="SailPivot"]
+position = Vector3(-0.005, 4.45, 0.49)
+rotation_degrees = Vector3(0, -90, 0)
+pixel_size = 0.0009
+texture = ExtResource("7_class_mark")
+double_sided = false
+no_depth_test = false
+render_priority = 1
+cast_shadow = 0
+
+[node name="ClassMarkStarboard" type="Sprite3D" parent="SailPivot"]
+position = Vector3(0.005, 4.45, 0.49)
+rotation_degrees = Vector3(0, 90, 0)
+pixel_size = 0.0009
+texture = ExtResource("7_class_mark")
+double_sided = false
+no_depth_test = false
+render_priority = 1
+cast_shadow = 0
+
+[node name="AuthorizedSailButton" type="MeshInstance3D" parent="SailPivot"]
+position = Vector3(-0.015, 1.43, 0.09)
+rotation_degrees = Vector3(0, -90, 0)
+mesh = SubResource("SailButtonMesh")
+
+[node name="AuthorizedSailButtonStarboard" type="MeshInstance3D" parent="SailPivot"]
+position = Vector3(0.082, 1.43, 0.09)
+rotation_degrees = Vector3(0, 90, 0)
+mesh = SubResource("SailButtonMesh")
+
+[node name="Rigging" type="Node3D" parent="."]
+script = ExtResource("5_rigging")
+sail_pivot_path = NodePath("../SailPivot")
+
+[node name="Sailor" type="Node3D" parent="."]
+script = ExtResource("6_sailor")
