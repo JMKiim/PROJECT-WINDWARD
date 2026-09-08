@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/boat/animation/rudder_pose_source.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+palm_keys = PackedVector3Array(0.0, 0.78, 0.70, -0.025, 0.78, 0.70, -0.05, 0.78, 0.70, -0.075, 0.78, 0.70, -0.10, 0.78, 0.70)
+tiller_elbow_guide = Vector3(-0.30, 0.45, 1.60)
+tiller_elbow_push_guide = Vector3(-0.30, 0.45, 1.60)
+sheet_palm = Vector3(-0.27, 0.70, 0.30)
+sheet_elbow_guide = Vector3(-0.45, 0.35, 0.05)
+shoulder_protraction_degrees = Vector2(10, 12)
+torso_pitch_degrees = PackedFloat32Array(6, 3, 0, -1.5, -3)

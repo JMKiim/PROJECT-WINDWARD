@@ -5,6 +5,8 @@ const SAILOR_RIG := preload("res://src/boat/assets/sailor_rig_base.tscn")
 const SITTING_IDLE := preload("res://src/boat/assets/sailor_sitting_idle.res")
 const CROUCH_IDLE := preload("res://src/boat/assets/sailor_crouch_idle.res")
 const SAILOR_CONTACT_MODIFIER := preload("res://src/boat/sailor_contact_modifier.gd")
+const LEG_POSE := preload("res://src/boat/sailor_leg_pose.gd")
+const CONTROL_POSE := preload("res://src/boat/sailor_control_pose.gd")
 
 const BODY_HEIGHT_METERS := 1.75
 const SOURCE_BODY_HEIGHT_METERS := 1.819586
@@ -67,6 +69,19 @@ const TACK_EXIT_CROSSING_RATE := 0.60
 # clearance before the fixed shaft can follow.
 const TACK_EXIT_MAX_SEAT_STEP := 0.003
 const TACK_CENTER_RISE := 0.10
+const MANEUVER_CROUCH_SECONDS := 0.20
+const MANEUVER_CROSS_SECONDS := 0.62
+const MANEUVER_PIVOT_SECONDS := 0.54
+const MANEUVER_SIT_SECONDS := 0.24
+const MANEUVER_DURATION := MANEUVER_CROUCH_SECONDS + MANEUVER_CROSS_SECONDS + MANEUVER_PIVOT_SECONDS + MANEUVER_SIT_SECONDS
+# Each interval checks its midpoint as well as its endpoint: at most 1/60 s
+# between collision samples without rebuilding the entire rig four times at 120 Hz.
+const MANEUVER_SUBSTEP := 1.0 / 30.0
+const MANEUVER_MIN_SUBSTEP := 1.0 / 240.0
+const MANEUVER_FORWARD_SHIFT := 0.24
+const MANEUVER_CONTROL_LATERAL := 0.15
+const MANEUVER_CONTROL_HEIGHT := 0.80
+const MANEUVER_CONTROL_AFT := 0.74
 const SAILOR_PROCESS_PRIORITY := -10
 
 # A single Skeleton3D-X rotation preserves every Spine descendant's segment
@@ -167,11 +182,11 @@ const HANDOVER_END_SIDE := 0.88
 const CROUCH_ANIMATION_ENTRY_AMOUNT := 0.14
 const SEATED_ANIMATION_RETURN_SIDE := 0.99
 const HANDOVER_CLEARANCE_LATERAL := 0.26
-const HANDOVER_CLEARANCE_HEIGHT := 0.94
-const HANDOVER_CLEARANCE_AFT := 0.68
+const HANDOVER_CLEARANCE_HEIGHT := 0.73
+const HANDOVER_CLEARANCE_AFT := 0.90
 const HANDOVER_BEHIND_LATERAL := 0.0
-const HANDOVER_BEHIND_HEIGHT := 0.95
-const HANDOVER_BEHIND_AFT := 0.68
+const HANDOVER_BEHIND_HEIGHT := 0.73
+const HANDOVER_BEHIND_AFT := 0.90
 const HANDOVER_INCOMING_ACQUIRE_START := 0.28
 const HANDOVER_INCOMING_ACQUIRE_END := 0.46
 const HANDOVER_OUTGOING_RELEASE_START := 0.54
@@ -304,6 +319,18 @@ var _applied_neck_pitch := 0.0
 var _pose_animation := &"Seated"
 var _tiller_is_left := false
 var _last_hand_exchange_side := -1.0
+var _maneuver_active := false
+var _maneuver_elapsed := 0.0
+var _maneuver_start_side := -1.0
+var _maneuver_target_side := -1.0
+var _maneuver_kind: StringName = &"tack"
+var _maneuver_phase: StringName = &"seated"
+var _maneuver_crossing := 0.0
+var _maneuver_duck := 0.0
+var _maneuver_heading := 0.0
+var _maneuver_wait_seconds := 0.0
+var _animation_leg_rotations: Dictionary = {}
+var _animation_arm_rotations: Dictionary = {}
 var _hand_exchange_direction := 0.0
 var _hand_exchange_amount := 0.0
 var _hand_exchange_progress := 0.0
@@ -331,6 +358,21 @@ var _right_sheet_projection_active := false
 var _left_sheet_projection_ready_generations := 0
 var _right_sheet_projection_ready_generations := 0
 var _final_modified_bone_poses: Dictionary = {}
+var _final_skeleton_transform_boat := Transform3D.IDENTITY
+var _atomic_control_pose_enabled := true
+var _atomic_control_failures := 0
+var maneuver_profile := {"body_us": 0, "pose_us": 0, "arm_us": 0, "body_calls": 0, "pose_calls": 0, "arm_calls": 0}
+var _control_frame_delta := 1.0 / 60.0
+var _completed_extension_delta := 0.0
+var _atomic_control_history_valid := false
+var _last_validated_atomic_control_pose: Dictionary = {}
+var _atomic_control_frame_held := false
+var _atomic_control_rejected_trials := 0
+var _atomic_preview_debug_inputs: Dictionary = {}
+var _atomic_stage_debug_count := 0
+var _atomic_stage_debug_generation := -1
+var _maneuver_frame_start_time := 0.0
+var _maneuver_frame_pair_state: Dictionary = {}
 var _pending_extension_delta := 0.0
 var _pending_extension_immediate := true
 var _extension_resolve_pending := false
@@ -431,195 +473,247 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	var boom_side := signf(_boat.get_sailing_state().boom_angle_radians)
-	if is_zero_approx(boom_side):
-		boom_side = 1.0
-	var desired_seat_side := -boom_side
-	var tack_requested := absf(desired_seat_side - seat_side) > 0.0001
-	if not tack_requested:
-		_tack_entry_preposition_active = false
-		_tack_entry_crouch_elapsed = 0.0
-	elif (
-		_tack_entry_preposition_active
-		and _hand_exchange_progress >= TACK_ENTRY_RELEASE_PROGRESS
-	):
-		# Once the fully crouched entry pose and its extension pair have been verified,
-		# hand the route to the central edge-permit handshake. The last guarded body
-		# step is re-sampled before central movement can continue.
-		_tack_entry_preposition_active = false
-	elif (
-		_hand_exchange_progress <= 0.001
-		and absf(seat_side) >= 0.99
-		and not _tack_entry_preposition_active
-	):
-		# Before the body crosses the cockpit, move the extension to the old-side
-		# upper/aft entry point. Starting the old normal->entry chord while the
-		# shoulders were already moving left no collision-free target for several
-		# frames and folded the tiller arm around its shoulder.
-		_tack_entry_preposition_active = true
-		_tack_entry_crouch_elapsed = 0.0
-		_hand_exchange_direction = signf(desired_seat_side - seat_side)
-		_reset_sheet_entry_preposition_readiness()
+	CONTROL_POSE.clear_cache()
+	_control_frame_delta = clampf(delta, 0.0, 0.10)
+	_boat.prepare_tiller_extension_body_pose_frame()
+	var boom_angle := _boat.get_sailing_state().boom_angle_radians
+	var requested_side := -signf(boom_angle)
 	if (
-		absf(desired_seat_side - seat_side) > 0.0001
-		and not _sheet_motion_is_safe_for_tack()
+		not _maneuver_active
+		and absf(boom_angle) > deg_to_rad(1.0)
+		and requested_side * seat_side < -0.95
 	):
+		_begin_maneuver(requested_side)
+	_maneuver_frame_pair_state.clear()
+	if _maneuver_active:
+		_maneuver_frame_start_time = _maneuver_elapsed
+		_maneuver_frame_pair_state = _boat.capture_tiller_extension_body_pose_pair_state()
 		_sheet_tack_interlock_requested = true
-	# A tack changes which anatomical hand owns each control. Do not start that
-	# exchange while the primary sheet hand is released and the extension hand is
-	# carrying sheet tension. Finish the hand-back first, then move across the boat.
-	# During the final handover quarter, also let the physical extension align its
-	# direction and freely selected grip point before the torso advances again.
-	# This narrow interlock prevents the new tiller shoulder from overtaking a
-	# centreline grip while direction and grip distance are still changing.
-	var sheet_tack_wait := (
-		_sheet_tack_interlock_requested
-		and not _sheet_motion_is_safe_for_tack()
-	)
-	var sheet_entry_preposition_ready := (
-		not _tack_entry_preposition_active
-		or _sheet_entry_preposition_is_ready()
-	)
-	var entry_permission_granted := false
-	if (
-		_tack_entry_preposition_active
-		and sheet_entry_preposition_ready
-		and not sheet_tack_wait
-	):
-		entry_permission_granted = (
-			_boat.consume_tiller_extension_entry_step_permission()
-		)
-	var entry_crouch_preparing := (
-		_tack_entry_preposition_active
-		and _tack_entry_crouch_elapsed < TACK_ENTRY_CROUCH_SETTLE_TIME
-	)
-	var pose_animation_delta := delta
-	if entry_crouch_preparing:
-		pose_animation_delta = 0.0
-		if entry_permission_granted:
-			pose_animation_delta = minf(
-				maxf(delta, 0.0),
-				TACK_ENTRY_CROUCH_MAX_STEP
-			)
-			_tack_entry_crouch_elapsed += pose_animation_delta
-	var entry_step_allowed := (
-		not _tack_entry_preposition_active
-		or (not entry_crouch_preparing and entry_permission_granted)
-	)
-	var extension_exit_active := (
-		_hand_exchange_progress >= 0.72
-		and _boat.tiller_extension_handover_route_active()
-	)
-	var extension_central_active := (
-		_hand_exchange_progress >= TACK_ENTRY_RELEASE_PROGRESS
-		and _hand_exchange_progress < 0.72
-		and _boat.tiller_extension_handover_route_active()
-		and not _tack_entry_preposition_active
-	)
-	# One verified central pair permits one bounded body step. This prevents the
-	# torso from overtaking a still-rotating fixed shaft and makes any bridge wait
-	# happen before, rather than after, the current pair enters a shoulder capsule.
-	var extension_central_step_allowed := not extension_central_active
-	if extension_central_active and not sheet_tack_wait:
-		extension_central_step_allowed = (
-			_boat.consume_tiller_extension_central_step_permission()
-		)
-	var extension_exit_step_allowed := not extension_exit_active
-	if extension_exit_active and not sheet_tack_wait:
-		extension_exit_step_allowed = (
-			_boat.consume_tiller_extension_exit_step_permission()
-		)
-	if (
-		not sheet_tack_wait
-		and entry_step_allowed
-		and extension_central_step_allowed
-		and extension_exit_step_allowed
-	):
-		var crossing_rate := TACK_CROSSING_RATE
-		var crossing_step := minf(
-			crossing_rate * delta,
-			TACK_MAX_SEAT_STEP
-		)
-		if _tack_entry_preposition_active:
-			crossing_step = minf(
-				crossing_rate * delta,
-				TACK_ENTRY_MAX_SEAT_STEP
-			)
-		elif extension_central_active:
-			crossing_step = minf(
-				crossing_rate * delta,
-				TACK_CENTRAL_MAX_SEAT_STEP
-			)
-		elif extension_exit_active:
-			crossing_rate = TACK_EXIT_CROSSING_RATE
-			crossing_step = minf(
-				crossing_rate * delta,
-				TACK_EXIT_MAX_SEAT_STEP
-			)
-		var next_seat_side := move_toward(
-			seat_side,
-			desired_seat_side,
-			crossing_step
-		)
-		# Stop exactly on the first EXIT_ALIGN pose. Without this clamp a low-FPS
-		# frame can overshoot the measured capsule clearance before the controller
-		# has ever solved the normal direction/grip pair for that body pose.
-		if (
-			_hand_exchange_progress < 0.72
-			and not is_zero_approx(_hand_exchange_direction)
-		):
-			var exit_boundary_side := _hand_exchange_direction * lerpf(
-				-HANDOVER_END_SIDE,
-				HANDOVER_END_SIDE,
-				0.72
-			)
-			if _hand_exchange_direction > 0.0:
-				next_seat_side = minf(next_seat_side, exit_boundary_side)
-			else:
-				next_seat_side = maxf(next_seat_side, exit_boundary_side)
-		seat_side = next_seat_side
-	_apply_pose_side_transform()
-	if _tack_seated_return_active:
-		var return_step_is_safe := (
-			_boat.consume_tiller_extension_seated_return_step_permission()
-		)
-		if return_step_is_safe:
-			pose_animation_delta = minf(
-				maxf(pose_animation_delta, 0.0),
-				TACK_SEATED_RETURN_MAX_STEP
-			)
-			_tack_seated_return_elapsed += pose_animation_delta
-			if _tack_seated_return_elapsed >= TACK_SEATED_RETURN_SETTLE_TIME:
-				_tack_seated_return_active = false
+		if _sheet_motion_is_safe_for_tack():
+			_advance_maneuver(maxf(delta, 0.0))
 		else:
-			# A recovery-normal pair is certified against the current crouched body.
-			# Freeze the blend if the next capsule sample invalidates it, so the
-			# controller can relocate the foam contact before the shoulders move again.
-			pose_animation_delta = 0.0
-	# Manual playback makes the order deterministic: animation, procedural head,
-	# anatomical anchors, then the later-priority camera.
-	# Restore the previous pure animation sample before advancing. Spine has no
-	# track in the imported idle clips, so without this step its procedural
-	# twist/flex would become the next frame's animation base and accumulate.
-	_restore_animation_torso_pose()
-	_animation_player.advance(pose_animation_delta)
-	_capture_animation_torso_pose()
-	_apply_head_pose()
-	_update_leg_ik_targets()
-	_update_hand_exchange_state()
+			_maneuver_wait_seconds += maxf(delta, 0.0)
+	else:
+		_apply_pose_side_transform()
+		_restore_animation_torso_pose()
+		_animation_player.advance(delta)
+		_capture_animation_torso_pose()
+		_apply_head_pose()
+		_update_leg_ik_targets()
+		_update_hand_exchange_state()
 	_resolve_control_hands(false)
-	if (
-		_sheet_tack_interlock_requested
-		and _sheet_motion_is_safe_for_tack()
-		and absf(seat_side - desired_seat_side) <= 0.0001
-		and _hand_exchange_amount <= 0.05
-	):
-		_sheet_tack_interlock_requested = false
-	# The final thigh positions exist only inside the deferred SkeletonModifier
-	# cycle. Queue the request here; the last leg IK callback resolves the rubber
-	# joint and writes arm targets before the two arm modifiers execute.
 	queue_tiller_extension_resolve(delta)
 	_apply_control_grip_pose()
+
+
+func _begin_maneuver(target_side: float) -> void:
+	_maneuver_active = true
+	_maneuver_elapsed = 0.0
+	_maneuver_start_side = signf(seat_side)
+	_maneuver_target_side = target_side
+	_maneuver_wait_seconds = 0.0
+	_hand_exchange_direction = target_side
+	_tack_entry_preposition_active = false
+	_tack_seated_return_active = false
+	_sheet_tack_interlock_requested = true
+	_pose_animation = &"Seated"
+	_animation_player.play("sailor/Seated")
+	_animation_player.seek(0.5, true)
+	_capture_animation_torso_pose()
+	var state := _boat.get_sailing_state()
+	var wind: Vector3 = state.apparent_wind_velocity()
+	var forward := -_boat.global_basis.z.normalized()
+	_maneuver_kind = &"gybe" if forward.dot(-wind.normalized()) < 0.0 else &"tack"
+	_apply_maneuver_sample(0.0)
+
+
+func maneuver_active() -> bool:
+	return _maneuver_active
+
+
+func maneuver_progress() -> float:
+	return _maneuver_crossing
+
+
+func maneuver_phase_name() -> StringName:
+	return _maneuver_phase
+
+
+func maneuver_kind_name() -> StringName:
+	return _maneuver_kind
+
+
+func _advance_maneuver(delta: float) -> void:
+	var started := Time.get_ticks_usec()
+	_advance_maneuver_impl(delta)
+	maneuver_profile["body_us"] += Time.get_ticks_usec() - started
+	maneuver_profile["body_calls"] += 1
+
+
+func _advance_maneuver_impl(delta: float) -> void:
+	# Limit catch-up work after a slow frame. Maneuver time advances only for
+	# accepted intervals; no unsafe intermediate body pose is skipped.
+	var remaining := minf(delta, MANEUVER_SUBSTEP)
+	var trial_step := MANEUVER_SUBSTEP
+	var searches := 0
+	while remaining > 0.000001 and _maneuver_elapsed < MANEUVER_DURATION:
+		var step := minf(remaining, trial_step)
+		var previous_time := _maneuver_elapsed
+		var next_time := minf(previous_time + step, MANEUVER_DURATION)
+		_apply_maneuver_sample(next_time)
+		var next_capsules := _sample_post_leg_body_capsules_boat()
+		var side := _maneuver_target_side if _maneuver_crossing >= 0.5 else _maneuver_start_side
+		var accepted := _boat.tiller_extension_pair_accepts_body_pose(
+			next_capsules, side, true
+		)
+		var wait_reason := "future_pair"
+		var proposal: Dictionary = {}
+		if not accepted:
+			# First try moving the body and shaft together over the full interval.
+			# Testing only a stationary shaft before subdivision reduced every
+			# successful coupled step to the minimum probe duration.
+			if searches >= 2 or (searches > 0 and step > MANEUVER_MIN_SUBSTEP + 0.000001):
+				_apply_maneuver_sample(previous_time)
+				if step > MANEUVER_MIN_SUBSTEP + 0.000001:
+					trial_step = maxf(step * 0.5, MANEUVER_MIN_SUBSTEP)
+					continue
+				break
+			searches += 1
+			# Body subdivision is a geometric safety probe, not a shorter render
+			# frame. Let the shaft prepare within this frame's remaining physical
+			# motion budget; committing only the probe duration starves both paths.
+			proposal = _boat.preview_tiller_extension_pair_for_body_pose(
+				next_capsules, side, true, remaining, 1
+			)
+			accepted = not proposal.is_empty()
+		if accepted:
+			wait_reason = "swept_pair"
+			var sweep_fractions := [0.5] if proposal.is_empty() else [0.25, 0.5, 0.75]
+			for fraction in sweep_fractions:
+				_apply_maneuver_sample(lerpf(previous_time, next_time, float(fraction)))
+				var swept_pair: Dictionary = {}
+				if not proposal.is_empty():
+					var from_direction: Vector3 = proposal["from_direction"]
+					swept_pair = {"direction": from_direction.slerp(proposal["direction"], float(fraction)),
+						"distance": lerpf(float(proposal["from_distance"]), float(proposal["distance"]), float(fraction))}
+				accepted = _boat.tiller_extension_pair_accepts_body_pose(
+					_sample_post_leg_body_capsules_boat(), side, true, swept_pair)
+				if not accepted:
+					break
+		if not accepted:
+			if not proposal.is_empty():
+				_boat.reject_tiller_extension_body_pose_pair(proposal)
+			if OS.get_environment("WINDWARD_MANEUVER_DEBUG") == "1" and _maneuver_wait_seconds < 0.1:
+				var axis := _boat.tiller_extension_direction_boat()
+				var joint: Vector3 = _boat.rudder_pivot.transform * _tiller_extension_pivot.position
+				var contact := joint + axis * _boat.tiller_extension_hand_distance()
+				print("MANEUVER_ARM_WAIT ", preview_tiller_extension_pair_wrist_guard(contact, axis, true))
+			_apply_maneuver_sample(previous_time)
+			if step > MANEUVER_MIN_SUBSTEP + 0.000001:
+				trial_step = maxf(step * 0.5, MANEUVER_MIN_SUBSTEP)
+				continue
+			if OS.has_environment("WINDWARD_MANEUVER_DEBUG") and _maneuver_wait_seconds < 0.1:
+				print("MANEUVER_WAIT phase=%s time=%.4f reason=%s proposal=%s" % [_maneuver_phase, previous_time, wait_reason, not proposal.is_empty()])
+			_maneuver_wait_seconds += remaining
+			break
+		_apply_maneuver_sample(next_time)
+		if not proposal.is_empty():
+			if not _boat.commit_tiller_extension_body_pose_pair(proposal):
+				_apply_maneuver_sample(previous_time)
+				_maneuver_wait_seconds += remaining
+				break
+			# A committed proposal has consumed this frame's remaining shaft time.
+			searches = 2
+		remaining -= step
+		trial_step = MANEUVER_SUBSTEP if not proposal.is_empty() else step
+	if _maneuver_elapsed >= MANEUVER_DURATION:
+		var pair := _boat.tiller_extension_driven_pair()
+		if (
+			not _boat.tiller_extension_is_blocked()
+			and not _boat.tiller_extension_handover_route_active()
+			and int(pair.get("mode", -1)) == WindwardBoat.TillerExtensionPairMode.NORMAL
+		):
+			_maneuver_active = false
+			# Releasing the maneuver also changes the ordinary sheet target rules.
+			# Validate that state before exposing it to the final arm modifier.
+			if not _boat.tiller_extension_pair_accepts_body_pose(
+				_last_resolved_body_capsules, _maneuver_target_side, false
+			):
+				_maneuver_active = true
+				return
+			_maneuver_phase = &"seated"
+			_maneuver_duck = 0.0
+			seat_side = _maneuver_target_side
+			_last_hand_exchange_side = seat_side
+			_sheet_tack_interlock_requested = false
+
+
+func _apply_maneuver_sample(elapsed: float) -> void:
+	var started := Time.get_ticks_usec()
+	_apply_maneuver_sample_impl(elapsed)
+	maneuver_profile["pose_us"] += Time.get_ticks_usec() - started
+	maneuver_profile["pose_calls"] += 1
+
+
+func _apply_maneuver_sample_impl(elapsed: float) -> void:
+	_maneuver_elapsed = elapsed
+	var cross_end := MANEUVER_CROUCH_SECONDS + MANEUVER_CROSS_SECONDS
+	var pivot_end := cross_end + MANEUVER_PIVOT_SECONDS
+	if elapsed < MANEUVER_CROUCH_SECONDS:
+		_maneuver_phase = &"crouch"
+		_maneuver_crossing = 0.0
+		_maneuver_duck = smoothstep(0.0, MANEUVER_CROUCH_SECONDS, elapsed)
+	elif elapsed < cross_end:
+		_maneuver_phase = &"cross"
+		_maneuver_crossing = 0.52 * smoothstep(MANEUVER_CROUCH_SECONDS, cross_end, elapsed)
+		_maneuver_duck = 1.0
+	elif elapsed < pivot_end:
+		_maneuver_phase = &"pivot"
+		_maneuver_crossing = lerpf(0.52, 1.0, smoothstep(cross_end, pivot_end, elapsed))
+		_maneuver_duck = 1.0
+	else:
+		_maneuver_phase = &"sit"
+		_maneuver_crossing = 1.0
+		_maneuver_duck = 1.0 - smoothstep(pivot_end, MANEUVER_DURATION, elapsed)
+	seat_side = lerpf(_maneuver_start_side, _maneuver_target_side, _maneuver_crossing)
+	# Tacking crosses through the bow-facing half turn. Preserve the unwrapped
+	# angle so the two seated endpoints cannot choose the stern-facing shortcut.
+	var turn_progress := smoothstep(0.06, 0.94, _maneuver_crossing)
+	var turn_sign := -1.0 if _maneuver_kind == &"tack" else 1.0
+	_maneuver_heading = -_maneuver_start_side * PI * 0.5 + turn_sign * _maneuver_start_side * PI * turn_progress
+	_hand_exchange_progress = _maneuver_crossing
+	_hand_exchange_amount = sin(_maneuver_crossing * PI)
+	_tiller_is_left = (
+		_maneuver_target_side > 0.0
+		if _maneuver_crossing >= 0.5
+		else _maneuver_start_side > 0.0
+	)
+	_last_hand_exchange_side = seat_side
+	_restore_animation_torso_pose()
+	for bone in _animation_arm_rotations:
+		_skeleton.set_bone_pose_rotation(int(bone), _animation_arm_rotations[bone])
+	_apply_pose_side_transform()
+	_apply_head_pose()
+	_update_leg_ik_targets()
+	_solve_maneuver_legs()
+	_last_resolved_body_capsules = _sample_post_leg_body_capsules_boat()
+
+
+func _solve_maneuver_legs() -> void:
+	for bone in _animation_leg_rotations:
+		_skeleton.set_bone_pose_rotation(int(bone), _animation_leg_rotations[bone])
+	_skeleton.force_update_bone_child_transform(_hips_bone)
+	for entry in [
+		[_left_upper_leg_bone, _left_lower_leg_bone, _left_foot_bone, _left_foot_target, _left_foot_pole],
+		[_right_upper_leg_bone, _right_lower_leg_bone, _right_foot_bone, _right_foot_target, _right_foot_pole],
+	]:
+		var target: Node3D = entry[3]
+		var pole: Node3D = entry[4]
+		LEG_POSE.solve(
+			_skeleton, int(entry[0]), int(entry[1]), int(entry[2]),
+			_skeleton.to_local(target.global_position),
+			_skeleton.to_local(pole.global_position)
+		)
 
 
 func _install_seated_pose() -> void:
@@ -704,7 +798,7 @@ func _apply_pose_side_transform() -> void:
 	var crossing_amount := 1.0 - absf(clamped_side)
 	_pose_root.rotation = Vector3(
 		0.0,
-		BODY_FORWARD_CORRECTION + BODY_SEAT_YAW * clamped_side,
+		_maneuver_heading if _maneuver_active else BODY_FORWARD_CORRECTION + BODY_SEAT_YAW * clamped_side,
 		0.0
 	)
 	_pose_root.scale = Vector3.ONE
@@ -712,6 +806,8 @@ func _apply_pose_side_transform() -> void:
 
 
 func _update_pose_animation(crossing_amount: float) -> void:
+	if _maneuver_active:
+		return
 	# Duck before the body leaves the old side. Starting the half-second Crouch
 	# blend at |side| ~= .86 moved the tiller shoulder through an entry pair that
 	# had been solved against Seated, turning a safe 98 cm foam contact into a
@@ -798,6 +894,12 @@ func set_head_look(yaw: float, pitch: float) -> Vector2:
 func _capture_animation_torso_pose() -> void:
 	if not is_instance_valid(_skeleton):
 		return
+	for bone in [_left_upper_leg_bone, _left_lower_leg_bone, _left_foot_bone, _right_upper_leg_bone, _right_lower_leg_bone, _right_foot_bone]:
+		if bone >= 0:
+			_animation_leg_rotations[bone] = _skeleton.get_bone_pose_rotation(bone)
+	for bone in [_left_upper_arm_bone, _left_lower_arm_bone, _right_upper_arm_bone, _right_lower_arm_bone]:
+		if bone >= 0:
+			_animation_arm_rotations[bone] = _skeleton.get_bone_pose_rotation(bone)
 	for bone_index in [_spine_bone, _chest_bone, _upper_chest_bone]:
 		if bone_index >= 0:
 			# Sitting/Crouch have no Spine track. Retain its first pure source
@@ -838,7 +940,7 @@ func _apply_torso_pose() -> void:
 		_spine_bone,
 		(
 			Basis(Vector3.UP, _neutral_upper_torso_yaw())
-			* Basis(Vector3.RIGHT, NEUTRAL_SPINE_PITCH)
+			* Basis(Vector3.RIGHT, NEUTRAL_SPINE_PITCH + _maneuver_duck * deg_to_rad(12.0))
 			* spine_basis
 		).orthonormalized()
 	)
@@ -1104,6 +1206,11 @@ func tiller_extension_pose_generation() -> int:
 	return _extension_pose_generation
 
 
+func tiller_extension_pose_delta() -> float:
+	# Delta belongs to the completed modifier generation, not the next idle frame.
+	return _completed_extension_delta
+
+
 func _on_leg_ik_modification_processed() -> void:
 	if (
 		not _anatomical_controls_ready
@@ -1112,6 +1219,7 @@ func _on_leg_ik_modification_processed() -> void:
 	):
 		return
 	_inside_leg_modifier_callback = true
+	_solve_maneuver_legs()
 	var body_capsules := _sample_post_leg_body_capsules_boat()
 	if body_capsules.size() >= 3:
 		_last_resolved_body_capsules = body_capsules.duplicate(true)
@@ -1121,18 +1229,60 @@ func _on_leg_ik_modification_processed() -> void:
 			body_capsules,
 			resolve_immediate
 		)
+		_control_pose_immediate = resolve_immediate
+		var staged_pose := _stage_atomic_control_pose_for_next_generation()
+		var rejected_final_arms := not bool(staged_pose["safe"])
+		if rejected_final_arms:
+			_atomic_control_rejected_trials += 1
+		if (
+			(_boat.tiller_extension_is_blocked() or rejected_final_arms)
+			and not _maneuver_frame_pair_state.is_empty()
+		):
+			# Either final participant can reject a trial. Restore the prepared
+			# frame's body and shaft before staging both hands again; never rewind
+			# the actual rudder input or accept one hand from the rejected posture.
+			_maneuver_active = true
+			_apply_maneuver_sample(_maneuver_frame_start_time)
+			var restored_capsules := _sample_post_leg_body_capsules_boat()
+			var restored_side := _maneuver_target_side if _maneuver_crossing >= 0.5 else _maneuver_start_side
+			_last_resolved_body_capsules = restored_capsules
+			_sheet_tack_interlock_requested = true
+			_maneuver_wait_seconds += _pending_extension_delta
+			_resolve_control_hands(false)
+			if _boat.restore_tiller_extension_body_pose_pair_state(
+				_maneuver_frame_pair_state, restored_capsules, restored_side, true
+			):
+				staged_pose = _stage_atomic_control_pose_for_next_generation()
+			else:
+				# The prepared shaft may itself be infeasible after a real joint
+				# movement. Keep the restored body, report the hold, and do not
+				# manufacture a successful contact or revive the rejected pose.
+				staged_pose["safe"] = false
+			_apply_control_grip_pose()
 		_pending_extension_immediate = false
 		_extension_resolve_pending = false
 		_extension_pose_generation += 1
+		_completed_extension_delta = _pending_extension_delta
 		# Modifier sibling order is legs first, arms second. These targets are thus
-		# consumed by both arm IK solvers in this same rendered skeleton cycle.
-		_control_pose_immediate = resolve_immediate
-		_update_control_ik_targets()
+		# consumed by both arm solvers in this same rendered skeleton cycle. Commit
+		# the exact staged solution; re-reading the sheet here would advance its
+		# generation independently and could invalidate the final preflight.
+		if bool(staged_pose["safe"]):
+			_rendered_sheet_target_boat = staged_pose["sheet_target"]
+			_rendered_sheet_target_initialized = true
+			_rendered_sheet_target_generation = _extension_pose_generation
+			_apply_atomic_control_targets(staged_pose)
+		elif _atomic_control_history_valid:
+			_hold_validated_atomic_control_targets(staged_pose)
+		else:
+			# Initial placement precedes the first validated physical grip.
+			_update_control_ik_targets()
 		_control_pose_immediate = false
 	_inside_leg_modifier_callback = false
 
 
 func _apply_terminal_contact_pose() -> void:
+	_solve_control_arm_poses()
 	# This runs inside the final SkeletonModifier3D, after both leg and arm IK
 	# solvers. IK remains authoritative for knee/elbow placement; this pass fixes
 	# terminal roll and the few-millimetre palm offset introduced by that roll.
@@ -1161,6 +1311,23 @@ func _apply_terminal_contact_pose() -> void:
 			_right_palm_goal_global
 		)
 	_capture_terminal_contact_bone_poses()
+
+
+func _solve_control_arm_poses() -> void:
+	for bone in _animation_arm_rotations:
+		_skeleton.set_bone_pose_rotation(int(bone), _animation_arm_rotations[bone])
+	_skeleton.force_update_bone_child_transform(_upper_chest_bone)
+	for entry in [
+		[_left_upper_arm_bone, _left_lower_arm_bone, _left_hand_bone, _left_hand_target, _left_hand_pole],
+		[_right_upper_arm_bone, _right_lower_arm_bone, _right_hand_bone, _right_hand_target, _right_hand_pole],
+	]:
+		var target: Node3D = entry[3]
+		var pole: Node3D = entry[4]
+		LEG_POSE.solve(
+			_skeleton, int(entry[0]), int(entry[1]), int(entry[2]),
+			_skeleton.to_local(target.global_position),
+			_skeleton.to_local(pole.global_position)
+		)
 
 
 func _post_ik_blended_control_hand_basis(
@@ -1300,6 +1467,8 @@ func _align_bare_foot_to_strap(
 	var clamped_side := clampf(seat_side, -1.0, 1.0)
 	var crossing_amount := 1.0 - absf(clamped_side)
 	var horizontal_direction := Vector3(-clamped_side, 0.0, -crossing_amount)
+	if _maneuver_active:
+		horizontal_direction = Basis(Vector3.UP, _maneuver_heading).z
 	if horizontal_direction.length_squared() <= 0.000001:
 		horizontal_direction = Vector3(-foot_side, 0.0, 0.0)
 	horizontal_direction = horizontal_direction.normalized()
@@ -1387,6 +1556,7 @@ func _on_arm_ik_modification_processed() -> void:
 		_right_hand_anchor
 	)
 	_final_palm_offsets_valid = true
+	_final_skeleton_transform_boat = _boat.global_transform.affine_inverse() * _skeleton.global_transform
 	_capture_final_modified_bone_pose(_hips_bone, &"Hips")
 	_capture_final_modified_bone_pose(_upper_chest_bone, &"UpperChest")
 	_capture_final_modified_bone_pose(_head_bone, &"Head")
@@ -1398,6 +1568,8 @@ func _on_arm_ik_modification_processed() -> void:
 	_capture_final_modified_bone_pose(_right_foot_tip_bone, &"RightFootTip")
 	_capture_final_modified_bone_pose(_left_lower_arm_bone, &"LeftLowerArm")
 	_capture_final_modified_bone_pose(_right_lower_arm_bone, &"RightLowerArm")
+	_capture_final_modified_bone_pose(_left_upper_arm_bone, &"LeftUpperArm")
+	_capture_final_modified_bone_pose(_right_upper_arm_bone, &"RightUpperArm")
 	_capture_final_modified_bone_pose(_left_hand_bone, &"LeftHand")
 	_capture_final_modified_bone_pose(_right_hand_bone, &"RightHand")
 
@@ -1418,6 +1590,15 @@ func final_modified_bone_pose(bone_name: StringName) -> Transform3D:
 	# Diagnostic/test API: direct bone reads outside modification_processed see
 	# Godot's rolled-back source pose, not the rendered IK result.
 	return _final_modified_bone_poses.get(bone_name, Transform3D.IDENTITY)
+
+
+func _previous_control_pose_in_skeleton(bone_name: StringName) -> Transform3D:
+	# History belongs to the boat frame in which it was rendered. Reusing old
+	# skeleton coordinates after a body turn rotates the remembered arm twice.
+	return (
+		_skeleton.global_transform.affine_inverse() * _boat.global_transform
+		* _final_skeleton_transform_boat * _final_modified_bone_poses[bone_name]
+	)
 
 
 func _append_bone_capsule(
@@ -1959,7 +2140,7 @@ func _solve_seat_contact() -> void:
 	var target_global := _boat.to_global(Vector3(
 		side * SEAT_CONTACT_LATERAL,
 		target_y,
-		SEAT_CONTACT_AFT
+		SEAT_CONTACT_AFT - (sin(_maneuver_crossing * PI) * MANEUVER_FORWARD_SHIFT if _maneuver_active else 0.0)
 	))
 	_pose_root.global_position += target_global - _seat_contact_anchor.global_position
 	_update_seat_contact_anchor()
@@ -2624,7 +2805,7 @@ func _resolve_control_hands(update_exchange_state: bool = true) -> void:
 	if update_exchange_state:
 		_update_hand_exchange_state()
 	# Anatomical hands remain continuous. Their control roles switch only while
-	# both hands overlap on the extension at the behind-the-back handover point.
+	# both hands overlap on the extension at the handover point.
 	if _tiller_is_left:
 		_tiller_hand_anchor = _left_hand_anchor
 		_sheet_hand_anchor = _right_hand_anchor
@@ -2648,14 +2829,14 @@ func _control_hand_tiller_weight(hand_bone: int) -> float:
 	var auxiliary_weight := 0.0
 	if progress <= 0.5:
 		auxiliary_weight = smoothstep(
-			HANDOVER_INCOMING_ACQUIRE_START,
+			0.18 if _maneuver_active else HANDOVER_INCOMING_ACQUIRE_START,
 			HANDOVER_INCOMING_ACQUIRE_END,
 			progress
 		)
 	else:
 		auxiliary_weight = 1.0 - smoothstep(
 			HANDOVER_OUTGOING_RELEASE_START,
-			HANDOVER_OUTGOING_RELEASE_END,
+			0.80 if _maneuver_active else HANDOVER_OUTGOING_RELEASE_END,
 			progress
 		)
 	if hand_bone == _left_hand_bone:
@@ -2674,6 +2855,9 @@ func _update_leg_ik_targets() -> void:
 	):
 		return
 	var side_ratio := clampf((seat_side + 1.0) * 0.5, 0.0, 1.0)
+	if _maneuver_active:
+		_update_maneuver_foot_targets()
+		return
 	var left_target_z := lerpf(FOOT_TARGET_FORWARD_Z, FOOT_TARGET_AFT_Z, side_ratio)
 	var right_target_z := lerpf(FOOT_TARGET_AFT_Z, FOOT_TARGET_FORWARD_Z, side_ratio)
 	var clamped_side := clampf(seat_side, -1.0, 1.0)
@@ -2718,7 +2902,43 @@ func _update_leg_ik_targets() -> void:
 	))
 
 
+func _update_maneuver_foot_targets() -> void:
+	var body_basis := Basis(Vector3.UP, _maneuver_heading)
+	for is_left in [true, false]:
+		var foot_sign := -1.0 if is_left else 1.0
+		var lead: bool = bool(is_left) == (_maneuver_start_side < 0.0)
+		var step_start := 0.04 if lead else 0.34
+		var step_end := 0.64 if lead else 0.96
+		var step_progress := smoothstep(step_start, step_end, _maneuver_crossing)
+		var foot_side := lerpf(_maneuver_start_side, _maneuver_target_side, step_progress)
+		var stagger := (foot_side + 1.0) * 0.5
+		var target_z := lerpf(
+			FOOT_TARGET_FORWARD_Z if is_left else FOOT_TARGET_AFT_Z,
+			FOOT_TARGET_AFT_Z if is_left else FOOT_TARGET_FORWARD_Z,
+			stagger
+		)
+		var swing := sin(step_progress * PI)
+		var ankle := Vector3(
+			foot_side * FOOT_TARGET_OUTBOARD_X + body_basis.x.x * foot_sign * 0.065 * swing,
+			FOOT_ANKLE_HEIGHT + 0.045 * swing,
+			target_z - MANEUVER_FORWARD_SHIFT * 0.65 * swing
+		)
+		var target := _left_foot_target if is_left else _right_foot_target
+		var pole := _left_foot_pole if is_left else _right_foot_pole
+		target.global_position = _boat.to_global(ankle)
+		var hip_index := _left_upper_leg_bone if is_left else _right_upper_leg_bone
+		var hip := _boat.to_local((_skeleton.global_transform * _skeleton.get_bone_global_pose(hip_index)).origin)
+		var axis := (ankle - hip).normalized()
+		var bend := body_basis.z + body_basis.x * foot_sign * 0.12
+		bend = (bend - axis * bend.dot(axis)).normalized()
+		var moving_pole := hip.lerp(ankle, 0.5) + bend * 0.45
+		var seated_pole := Vector3(foot_side * FOOT_POLE_OUTBOARD_X, FOOT_POLE_HEIGHT, target_z)
+		pole.global_position = _boat.to_global(seated_pole.lerp(moving_pole, _maneuver_duck))
+
+
 func _update_hand_exchange_state() -> void:
+	if _maneuver_active:
+		return
 	var side_delta := seat_side - _last_hand_exchange_side
 	var exchange_requested := absf(side_delta) > 0.0001
 	if exchange_requested and not _sheet_motion_is_safe_for_tack():
@@ -2789,6 +3009,13 @@ func tiller_control_target_boat_position(rudder_input: float) -> Vector3:
 		extension_joint
 		+ normal_direction * hand_distance
 	)
+	if _maneuver_active:
+		var transfer_target := Vector3(
+			seat_side * MANEUVER_CONTROL_LATERAL,
+			MANEUVER_CONTROL_HEIGHT,
+			MANEUVER_CONTROL_AFT
+		)
+		return normal_target.lerp(transfer_target, _maneuver_duck)
 	var new_side := _hand_exchange_direction
 	if is_zero_approx(new_side):
 		new_side = steering_side
@@ -3109,11 +3336,20 @@ func sheet_tack_interlock_active() -> bool:
 func sheet_control_target_boat_position() -> Vector3:
 	var power_target := _sheet_power_target_boat()
 	var motion_target := _sheet_hand_target_boat
+	motion_target.x = _sheet_target_side() * absf(motion_target.x)
+	var ordinary_target := power_target.lerp(motion_target, _sheet_motion_weight)
+	if _maneuver_active:
+		var body_basis := Basis(Vector3.UP, _maneuver_heading)
+		var sheet_lateral := 0.20 if _tiller_is_left else -0.20
+		var working_target := Vector3(
+			seat_side * SEAT_CONTACT_LATERAL, SHEET_TARGET_HEIGHT,
+			SEAT_CONTACT_AFT - sin(_maneuver_crossing * PI) * MANEUVER_FORWARD_SHIFT
+		) + body_basis.z * 0.30 + body_basis.x * sheet_lateral
+		return ordinary_target.lerp(working_target, _maneuver_duck)
 	# Motion targets are stored as a positive lateral magnitude. Reapply the
 	# current continuous seat side at read time so HOLD cannot retain the old
 	# tack's absolute X coordinate and fold the sheet arm across the body.
-	motion_target.x = _sheet_target_side() * absf(motion_target.x)
-	return power_target.lerp(motion_target, _sheet_motion_weight)
+	return ordinary_target
 
 
 func _sheet_target_side() -> float:
@@ -3186,6 +3422,8 @@ func _compose_control_palm_goals_global(
 
 
 func _peek_rendered_sheet_target_boat_for_next_pose() -> Vector3:
+	if _maneuver_active:
+		return sheet_control_target_boat_position()
 	var desired := sheet_control_target_boat_position()
 	if _pending_extension_immediate or not _rendered_sheet_target_initialized:
 		return desired
@@ -3200,7 +3438,8 @@ func _peek_rendered_sheet_target_boat_for_next_pose() -> Vector3:
 
 func preview_tiller_extension_pair_wrist_guard(
 	contact_boat: Vector3,
-	direction_boat: Vector3
+	direction_boat: Vector3,
+	validate_arm: bool = false
 ) -> Dictionary:
 	# Boat evaluates many direction/distance pairs before publishing one. Predict
 	# only from stable, rendered state; never move targets, poles or hand history
@@ -3231,18 +3470,27 @@ func preview_tiller_extension_pair_wrist_guard(
 		_left_upper_arm_bone,
 		_left_hand_anchor,
 		goals["left_palm"],
-		float(goals["left_tiller_weight"])
+		float(goals["left_tiller_weight"]), direction_boat if validate_arm else Vector3.ZERO, goals["left_tiller_palm"]
 	)
-	var right_guard := _preview_control_wrist_guard_for_hand(
-		&"RightHand",
-		_right_hand_bone,
-		_right_upper_arm_bone,
-		_right_hand_anchor,
-		goals["right_palm"],
-		float(goals["right_tiller_weight"])
-	)
+	var right_guard: Dictionary = {
+		"safe": false, "relevant": false, "reach": 0.0,
+		"violation_m": 0.0, "reserve_m": INF, "comfort_cost": 0.0,
+	}
+	# A strict pair cannot pass after one arm rejects it. Broad scoring still
+	# evaluates both wrists; only the expensive boolean certification short-cuts.
+	if not validate_arm or bool(left_guard["safe"]):
+		right_guard = _preview_control_wrist_guard_for_hand(
+			&"RightHand",
+			_right_hand_bone,
+			_right_upper_arm_bone,
+			_right_hand_anchor,
+			goals["right_palm"],
+			float(goals["right_tiller_weight"]), direction_boat if validate_arm else Vector3.ZERO, goals["right_tiller_palm"]
+		)
 	return {
 		"safe": bool(left_guard["safe"]) and bool(right_guard["safe"]),
+		"left": left_guard,
+		"right": right_guard,
 		"left_reach": float(left_guard["reach"]),
 		"right_reach": float(right_guard["reach"]),
 		"left_relevant": bool(left_guard["relevant"]),
@@ -3276,9 +3524,13 @@ func _preview_control_wrist_guard_for_hand(
 	upper_arm_bone: int,
 	hand_anchor: Node3D,
 	palm_goal_global: Vector3,
-	tiller_weight: float
+	tiller_weight: float,
+	direction_boat: Vector3 = Vector3.ZERO,
+	rigid_palm_global: Vector3 = Vector3.INF
 ) -> Dictionary:
-	var relevant := tiller_weight > CONTROL_TILLER_CONTACT_WEIGHT_EPSILON
+	var relevant := not direction_boat.is_zero_approx() or _maneuver_active or tiller_weight > CONTROL_TILLER_CONTACT_WEIGHT_EPSILON
+	if _maneuver_active and direction_boat.is_zero_approx() and tiller_weight < 0.999:
+		relevant = false
 	if (
 		not relevant
 		or hand_bone < 0
@@ -3293,9 +3545,22 @@ func _preview_control_wrist_guard_for_hand(
 			"reserve_m": INF,
 			"comfort_cost": 0.0,
 		}
+	if not direction_boat.is_zero_approx():
+		var arm := _atomic_control_solution(hand_bone == _left_hand_bone, palm_goal_global, direction_boat, tiller_weight, _atomic_control_history_valid, rigid_palm_global)
+		if bool(arm["safe"]) and arm.has("debug_inputs"):
+			_atomic_preview_debug_inputs["left" if hand_bone == _left_hand_bone else "right"] = {
+				"inputs": arm["debug_inputs"], "generation": _extension_pose_generation,
+				"progress": _maneuver_crossing,
+			}
+		var arm_reach := float(arm["reach"])
+		return {"safe": bool(arm["safe"]), "relevant": true, "reach": arm_reach,
+			"solution": arm,
+			"violation_m": 0.0 if bool(arm["safe"]) else 0.01,
+			"reserve_m": minf(arm_reach - CONTROL_WRIST_REACH_MIN, CONTROL_WRIST_REACH_MAX - arm_reach),
+			"comfort_cost": absf(arm_reach - 0.35)}
 	var previous_basis := _skeleton.get_bone_global_pose(hand_bone).basis.orthonormalized()
 	if _final_modified_bone_poses.has(bone_key):
-		var previous_pose: Transform3D = _final_modified_bone_poses[bone_key]
+		var previous_pose := _previous_control_pose_in_skeleton(bone_key)
 		previous_basis = previous_pose.basis.orthonormalized()
 	var offset_world := (
 		_skeleton.global_basis * (previous_basis * hand_anchor.position)
@@ -3305,6 +3570,17 @@ func _preview_control_wrist_guard_for_hand(
 		_skeleton.global_transform
 		* _skeleton.get_bone_global_pose(upper_arm_bone)
 	).origin
+	if _maneuver_active and tiller_weight < 0.999:
+		var nominal_boat := _boat.to_local(nominal_wrist_global)
+		var shoulder_boat := _boat.to_local(shoulder_global)
+		var offset := nominal_boat - shoulder_boat
+		if offset.length_squared() > 0.000001:
+			var projected := shoulder_boat + offset.normalized() * clampf(offset.length(),
+				CONTROL_WRIST_REACH_MIN + CONTROL_SHEET_WRIST_REACH_GUARD,
+				CONTROL_WRIST_REACH_MAX - CONTROL_SHEET_WRIST_REACH_GUARD)
+			if tiller_weight <= CONTROL_SHEET_PROJECTION_HANDOFF_WEIGHT:
+				projected = _project_sheet_wrist_outside_body_capsules_boat(projected, shoulder_boat, upper_arm_bone)
+			nominal_wrist_global = _boat.to_global(nominal_boat.lerp(projected, 1.0 - smoothstep(0.0, 1.0, tiller_weight)))
 	var reach := shoulder_global.distance_to(nominal_wrist_global)
 	var transport_active := (
 		_left_elbow_transport_active
@@ -3322,6 +3598,13 @@ func _preview_control_wrist_guard_for_hand(
 	)
 	var minimum_reach := CONTROL_WRIST_REACH_MIN + maximum_drift
 	var maximum_reach := CONTROL_WRIST_REACH_MAX - maximum_drift
+	if _maneuver_active:
+		# Broad search only culls palms no wrist orientation can reach. The
+		# selected body/shaft transaction then validates the complete arm solution.
+		reach = shoulder_global.distance_to(palm_goal_global)
+		var palm_radius := hand_anchor.position.length() * BODY_UNIFORM_SCALE
+		minimum_reach = CONTROL_WRIST_REACH_MIN - palm_radius
+		maximum_reach = CONTROL_WRIST_REACH_MAX + palm_radius
 	var violation := maxf(
 		maxf(minimum_reach - reach, reach - maximum_reach),
 		0.0
@@ -3381,6 +3664,15 @@ func _update_control_ik_targets() -> void:
 		-_tiller_extension_pivot.global_basis.z.normalized(),
 		sheet_palm_goal
 	)
+	if _maneuver_active:
+		_atomic_control_pose_enabled = true
+	if _atomic_control_pose_enabled or _atomic_control_history_valid:
+		if _update_atomic_control_targets(control_goals):
+			return
+		if _atomic_control_history_valid:
+			# An initialized control pose may be held explicitly, but a rejected
+			# coupled solve must never fall through to unverified legacy targets.
+			return
 	var left_palm_goal: Vector3 = control_goals["left_tiller_palm"]
 	var right_palm_goal: Vector3 = control_goals["right_tiller_palm"]
 	var left_tiller_weight: float = control_goals["left_tiller_weight"]
@@ -3618,6 +3910,11 @@ func _update_control_ik_targets() -> void:
 	var right_is_flexible_sheet_hand := (
 		right_tiller_weight <= CONTROL_TILLER_CONTACT_WEIGHT_EPSILON
 	)
+	if _maneuver_active:
+		if left_tiller_weight >= 0.999:
+			_reset_sheet_wrist_projection_state(_left_hand_bone)
+		if right_tiller_weight >= 0.999:
+			_reset_sheet_wrist_projection_state(_right_hand_bone)
 	# Carry each projected sheet contact through the first few percent of the
 	# tiller handoff. Dropping the correction at weight 0.001 moved the palm and
 	# rope by 19 cm in one generation; the existing 20 mm release path can hand
@@ -3771,6 +4068,215 @@ func _update_control_ik_targets() -> void:
 			_right_hand_target.global_position = right_goal
 
 
+func _atomic_control_solution(is_left: bool, palm_global: Vector3, axis_boat: Vector3, weight: float, first_safe: bool = false, rigid_palm_global: Vector3 = Vector3.INF) -> Dictionary:
+	var started := Time.get_ticks_usec()
+	var result := _calculate_atomic_control_solution(is_left, palm_global, axis_boat, weight, first_safe, rigid_palm_global)
+	maneuver_profile["arm_us"] += Time.get_ticks_usec() - started
+	maneuver_profile["arm_calls"] += 1
+	return result
+
+
+func _calculate_atomic_control_solution(is_left: bool, palm_global: Vector3, axis_boat: Vector3, weight: float, first_safe: bool, rigid_palm_global: Vector3) -> Dictionary:
+	var upper := _left_upper_arm_bone if is_left else _right_upper_arm_bone
+	var lower := _left_lower_arm_bone if is_left else _right_lower_arm_bone
+	var hand := _left_hand_bone if is_left else _right_hand_bone
+	var anchor := _left_hand_anchor if is_left else _right_hand_anchor
+	var shoulder := _bone_origin_boat(upper)
+	var elbow := _bone_origin_boat(lower)
+	var wrist := _bone_origin_boat(hand)
+	var preferred := elbow
+	var key: StringName = &"LeftLowerArm" if is_left else &"RightLowerArm"
+	var hand_key: StringName = &"LeftHand" if is_left else &"RightHand"
+	var previous_hand: Dictionary = {}
+	if _final_modified_bone_poses.has(key):
+		preferred = (_final_skeleton_transform_boat * _final_modified_bone_poses[key]).origin
+	if _final_modified_bone_poses.has(hand_key):
+		var hand_pose: Transform3D = _final_skeleton_transform_boat * _final_modified_bone_poses[hand_key]
+		# The anatomical history stays separate from the preferred working pose.
+		# Preview and rendering share this frame budget, including body substeps.
+		previous_hand = {"basis": hand_pose.basis.orthonormalized()}
+		if _atomic_control_history_valid:
+			previous_hand["elbow"] = preferred
+			previous_hand["wrist"] = hand_pose.origin
+			previous_hand["max_elbow_step_m"] = 0.06 * _control_frame_delta * 60.0 + 0.002
+			previous_hand["max_wrist_step_m"] = 0.06 * _control_frame_delta * 60.0 + 0.002
+			previous_hand["max_hand_rotation_rad"] = deg_to_rad(20.0) * _control_frame_delta * 60.0 + deg_to_rad(0.5)
+	if _atomic_control_frame_held and not _last_validated_atomic_control_pose.is_empty():
+		var validated_hand: Dictionary = _last_validated_atomic_control_pose["left" if is_left else "right"]
+		preferred = validated_hand["elbow"]
+		previous_hand["basis"] = validated_hand["hand_basis"]
+		previous_hand["elbow"] = validated_hand["elbow"]
+		previous_hand["wrist"] = validated_hand["wrist"]
+	var scale_boat := (_boat.global_basis.inverse() * _skeleton.global_basis).get_scale().x
+	var palm := _boat.to_local(palm_global)
+	var signed_axis := axis_boat if is_left else -axis_boat
+	var outward := (shoulder - (_bone_origin_boat(_left_upper_arm_bone) + _bone_origin_boat(_right_upper_arm_bone)) * 0.5).normalized()
+	var forward := Basis(Vector3.UP, _maneuver_heading if _maneuver_active else -seat_side * PI * 0.5).z
+	if weight >= 0.999:
+		var working_elbow := shoulder + forward * 0.16 + outward * 0.16 + Vector3.DOWN * 0.10
+		var seated_bias := 1.0 - _maneuver_duck if _maneuver_active else 1.0
+		preferred = preferred.lerp(working_elbow, seated_bias * 0.85)
+	if _maneuver_active and weight < 0.999:
+		var relaxed := shoulder + forward * 0.32 + outward * 0.16 + Vector3.DOWN * 0.20
+		var soft_palm := _peek_rendered_sheet_target_boat_for_next_pose().lerp(relaxed, _maneuver_duck)
+		if rigid_palm_global.is_finite():
+			palm = soft_palm.lerp(_boat.to_local(rigid_palm_global), weight)
+			palm += outward * 0.24 * sin(weight * PI) * _maneuver_duck
+		# A free hand approaching the shaft must go around the shoulder's inner
+		# reach sphere, not through it. Project the continuous target before the
+		# arm search; changing elbow branches cannot make a too-close palm work.
+		var palm_vector := palm - shoulder
+		var minimum_palm_radius := CONTROL_WRIST_REACH_MIN + anchor.position.length() * scale_boat + 0.015
+		if palm_vector.length() < minimum_palm_radius:
+			var approach_direction := palm_vector.normalized() if palm_vector.length() > 0.00001 else forward
+			var projected_palm := shoulder + approach_direction * minimum_palm_radius
+			palm = palm.lerp(projected_palm, 1.0 - smoothstep(0.80, 1.0, weight))
+	var result := CONTROL_POSE.solve(shoulder, shoulder.distance_to(elbow), elbow.distance_to(wrist),
+		palm, signed_axis, anchor.position * scale_boat, preferred,
+		_last_resolved_body_capsules, weight > 0.0, previous_hand, weight, first_safe)
+	var requested_result := result
+	var solved_palm := palm
+	if not bool(result["safe"]) and weight < 0.999 and not _maneuver_active:
+		# A flexible contact can move with the hand; the rigid owner's contact
+		# must stay on the extension and is never projected into apparent reach.
+		for offset in [0.0, 0.08, 0.16]:
+			var relaxed: Vector3 = shoulder + forward * 0.28 + outward * (0.10 + float(offset)) + Vector3.DOWN * 0.20
+			var adjusted: Vector3 = relaxed.lerp(_boat.to_local(rigid_palm_global), weight) if _maneuver_active and rigid_palm_global.is_finite() else relaxed.lerp(palm, weight)
+			result = CONTROL_POSE.solve(shoulder, shoulder.distance_to(elbow), elbow.distance_to(wrist),
+				adjusted, signed_axis, anchor.position * scale_boat, preferred,
+				_last_resolved_body_capsules, weight > 0.0, previous_hand, weight, first_safe)
+			if bool(result["safe"]):
+				palm = adjusted
+				solved_palm = adjusted
+				break
+	if not bool(result["safe"]):
+		result = requested_result
+	result["palm"] = palm
+	if OS.get_environment("WINDWARD_MANEUVER_DEBUG") == "1":
+		result["debug_inputs"] = {
+			"shoulder": shoulder, "upper_length": shoulder.distance_to(elbow),
+			"lower_length": elbow.distance_to(wrist), "palm": solved_palm,
+			"axis": signed_axis, "palm_offset": anchor.position * scale_boat,
+			"preferred": preferred, "capsules": _last_resolved_body_capsules.duplicate(true),
+			"history": previous_hand.duplicate(true), "weight": weight, "first_safe": first_safe,
+		}
+	return result
+
+
+func _update_atomic_control_targets(goals: Dictionary) -> bool:
+	var pose := _solve_atomic_control_targets(goals)
+	if not bool(pose["safe"]):
+		_hold_validated_atomic_control_targets(pose)
+		return false
+	_apply_atomic_control_targets(pose)
+	return true
+
+
+func _solve_atomic_control_targets(goals: Dictionary) -> Dictionary:
+	# Solve both hands without publishing either one. Callers commit this exact
+	# pair only after the final body, shaft and sheet generation are accepted.
+	var axis := (_boat.global_basis.inverse() * -_tiller_extension_pivot.global_basis.z).normalized()
+	var left := _atomic_control_solution(true, goals["left_palm"], axis, float(goals["left_tiller_weight"]), _atomic_control_history_valid, goals["left_tiller_palm"])
+	var right := _atomic_control_solution(false, goals["right_palm"], axis, float(goals["right_tiller_weight"]), _atomic_control_history_valid, goals["right_tiller_palm"])
+	return {"safe": bool(left["safe"]) and bool(right["safe"]), "left": left, "right": right}
+
+
+func _stage_atomic_control_pose_for_next_generation() -> Dictionary:
+	_resolve_control_hands(false)
+	var sheet_target := _peek_rendered_sheet_target_boat_for_next_pose()
+	var goals := _compose_control_palm_goals_global(
+		_tiller_grip.global_position,
+		-_tiller_extension_pivot.global_basis.z.normalized(),
+		_boat.to_global(sheet_target)
+	)
+	var pose := _solve_atomic_control_targets(goals)
+	pose["sheet_target"] = sheet_target
+	if (
+		not bool(pose["safe"]) and _maneuver_active
+		and OS.get_environment("WINDWARD_MANEUVER_DEBUG") == "1"
+		and _atomic_stage_debug_count < 8
+		and _atomic_stage_debug_generation != _extension_pose_generation
+	):
+		_atomic_stage_debug_count += 1
+		_atomic_stage_debug_generation = _extension_pose_generation
+		for side in ["left", "right"]:
+			var hand: Dictionary = pose[side]
+			if bool(hand["safe"]):
+				continue
+			var final_inputs: Dictionary = hand.get("debug_inputs", {})
+			var witness: Dictionary = _atomic_preview_debug_inputs.get(side, {})
+			var preview_inputs: Dictionary = witness.get("inputs", {})
+			var difference := _atomic_control_input_difference(preview_inputs, final_inputs)
+			print("ARM_STAGE_MISMATCH generation=", _extension_pose_generation, " p=", _maneuver_crossing,
+				" hand=", side, " preview_generation=", witness.get("generation", -1),
+				" preview_p=", witness.get("progress", -1.0), " differences=", difference,
+				" final_rejection=", hand.get("rejection", {}))
+	return pose
+
+
+func _atomic_control_input_difference(previous: Dictionary, current: Dictionary) -> Dictionary:
+	if previous.is_empty() or current.is_empty():
+		return {"missing_inputs": true}
+	var differences := {}
+	for key in ["shoulder", "palm", "palm_offset", "preferred"]:
+		var before: Vector3 = previous[key]
+		var after: Vector3 = current[key]
+		differences[key + "_delta_m"] = before.distance_to(after)
+	for key in ["upper_length", "lower_length", "weight"]:
+		differences[key + "_delta"] = float(current[key]) - float(previous[key])
+	var previous_axis: Vector3 = previous["axis"]
+	var current_axis: Vector3 = current["axis"]
+	differences["axis_delta_deg"] = rad_to_deg(previous_axis.angle_to(current_axis))
+	differences["capsules_equal"] = previous["capsules"] == current["capsules"]
+	differences["history_equal"] = previous["history"] == current["history"]
+	differences["first_safe_equal"] = previous["first_safe"] == current["first_safe"]
+	if previous["history"] != current["history"]:
+		differences["previous_history"] = previous["history"]
+		differences["current_history"] = current["history"]
+	return differences
+
+
+func _apply_atomic_control_targets(pose: Dictionary, remember: bool = true) -> void:
+	var left: Dictionary = pose["left"]
+	var right: Dictionary = pose["right"]
+	var boat_to_skeleton := _skeleton.global_transform.affine_inverse() * _boat.global_transform
+	_left_hand_target.global_position = _boat.to_global(left["wrist"])
+	_right_hand_target.global_position = _boat.to_global(right["wrist"])
+	_left_hand_pole.global_position = _boat.to_global(left["elbow"])
+	_right_hand_pole.global_position = _boat.to_global(right["elbow"])
+	_left_expected_elbow_boat = left["elbow"]
+	_right_expected_elbow_boat = right["elbow"]
+	_left_desired_hand_basis = (boat_to_skeleton.basis * left["hand_basis"]).orthonormalized()
+	_right_desired_hand_basis = (boat_to_skeleton.basis * right["hand_basis"]).orthonormalized()
+	_left_palm_goal_global = _boat.to_global(left["palm"])
+	_right_palm_goal_global = _boat.to_global(right["palm"])
+	_left_hand_basis_override = true
+	_right_hand_basis_override = true
+	_reset_sheet_wrist_projection_state(_left_hand_bone)
+	_reset_sheet_wrist_projection_state(_right_hand_bone)
+	if remember:
+		_last_validated_atomic_control_pose = pose.duplicate(true)
+		_atomic_control_history_valid = true
+		_atomic_control_frame_held = false
+
+
+func _hold_validated_atomic_control_targets(rejected_pose: Dictionary) -> void:
+	_atomic_control_failures += 1
+	_atomic_control_frame_held = _atomic_control_history_valid
+	if _atomic_control_history_valid and not _last_validated_atomic_control_pose.is_empty():
+		# Targets are stored in boat space, so a hold cannot retain yesterday's
+		# world coordinates while the boat keeps moving. This is not a newly
+		# validated physical grip and must remain visibly reported as blocked.
+		_apply_atomic_control_targets(_last_validated_atomic_control_pose, false)
+		_boat.mark_tiller_extension_control_pose_blocked()
+	if _atomic_control_failures <= 15:
+		var left: Dictionary = rejected_pose.get("left", {})
+		var right: Dictionary = rejected_pose.get("right", {})
+		print("ARM_POSE_BLOCKED phase=", maneuver_phase_name(), " p=", _maneuver_crossing,
+			" held=", _atomic_control_frame_held,
+			" left=", left.get("reason", "unsafe"), " right=", right.get("reason", "unsafe"))
+
+
 func _project_sheet_palm_goal_to_wrist_annulus(
 	palm_goal_global: Vector3,
 	desired_basis_skeleton: Basis,
@@ -3809,6 +4315,16 @@ func _project_sheet_palm_goal_to_wrist_annulus(
 	wrist_goal_global += (
 		shoulder_to_wrist / wrist_reach * (safe_reach - wrist_reach)
 	)
+	if _maneuver_active:
+		var tiller_weight := _control_hand_tiller_weight(hand_bone)
+		_reset_sheet_wrist_projection_state(hand_bone)
+		if tiller_weight >= 0.999:
+			return palm_goal_global
+		if route_clearance_required:
+			wrist_goal_global = _boat.to_global(_project_sheet_wrist_outside_body_capsules_boat(
+				_boat.to_local(wrist_goal_global), _boat.to_local(shoulder_global), upper_arm_bone
+			))
+		return palm_goal_global + (wrist_goal_global - original_wrist_goal_global) * (1.0 - smoothstep(0.0, 1.0, tiller_weight))
 	var projection_state_active := (
 		_left_sheet_projection_active
 		if hand_bone == _left_hand_bone
@@ -4892,7 +5408,7 @@ func _limit_control_hand_basis_frame(
 ) -> Basis:
 	if not _final_modified_bone_poses.has(bone_key):
 		return target_basis.orthonormalized()
-	var previous_pose: Transform3D = _final_modified_bone_poses[bone_key]
+	var previous_pose := _previous_control_pose_in_skeleton(bone_key)
 	var previous_quaternion := previous_pose.basis.orthonormalized().get_rotation_quaternion()
 	var target_quaternion := target_basis.orthonormalized().get_rotation_quaternion()
 	var angle := previous_quaternion.angle_to(target_quaternion)
@@ -4930,6 +5446,25 @@ func _expected_control_forearm_skeleton(
 		_skeleton.global_transform.affine_inverse()
 		* _boat.to_global(expected_elbow_boat)
 	)
+	var is_left := expected_elbow_boat == _left_expected_elbow_boat
+	var upper := _left_upper_arm_bone if is_left else _right_upper_arm_bone
+	var lower := _left_lower_arm_bone if is_left else _right_lower_arm_bone
+	var hand := _left_hand_bone if is_left else _right_hand_bone
+	var shoulder := _skeleton.get_bone_global_pose(upper).origin
+	var source_elbow := _skeleton.get_bone_global_pose(lower).origin
+	var source_wrist := _skeleton.get_bone_global_pose(hand).origin
+	var upper_length := shoulder.distance_to(source_elbow)
+	var lower_length := source_elbow.distance_to(source_wrist)
+	var offset := wrist_goal - shoulder
+	var distance := clampf(offset.length(), absf(upper_length - lower_length) + 0.002, upper_length + lower_length - 0.002)
+	if offset.length_squared() > 0.000001:
+		var axis := offset.normalized()
+		var along := (distance * distance + upper_length * upper_length - lower_length * lower_length) / (2.0 * distance)
+		var center := shoulder + axis * along
+		var bend := expected_elbow - center
+		bend -= axis * bend.dot(axis)
+		if bend.length_squared() > 0.000001:
+			expected_elbow = center + bend.normalized() * sqrt(maxf(upper_length * upper_length - along * along, 0.0))
 	return wrist_goal - expected_elbow
 
 
@@ -4949,6 +5484,13 @@ func _blend_control_hand_basis(
 
 func _rendered_sheet_control_target_boat_position() -> Vector3:
 	var desired := sheet_control_target_boat_position()
+	if _maneuver_active:
+		# The maneuver is already advanced through a checked temporal sweep. Its
+		# body-relative control path must follow that same step, including at 30 Hz.
+		_rendered_sheet_target_boat = desired
+		_rendered_sheet_target_initialized = true
+		_rendered_sheet_target_generation = _extension_pose_generation
+		return desired
 	if _control_pose_immediate or not _rendered_sheet_target_initialized:
 		_rendered_sheet_target_boat = desired
 		_rendered_sheet_target_initialized = true
@@ -4978,7 +5520,7 @@ func _desired_control_hand_basis_skeleton(
 	var current_basis := _skeleton.get_bone_global_pose(hand_bone).basis.orthonormalized()
 	var bone_key := &"LeftHand" if hand_bone == _left_hand_bone else &"RightHand"
 	if _final_modified_bone_poses.has(bone_key):
-		var previous_pose: Transform3D = _final_modified_bone_poses[bone_key]
+		var previous_pose := _previous_control_pose_in_skeleton(bone_key)
 		current_basis = previous_pose.basis.orthonormalized()
 	var grip_axis_world := (
 		-_tiller_extension_pivot.global_basis.z.normalized()
@@ -5025,8 +5567,8 @@ func _desired_control_hand_basis_skeleton(
 		_final_modified_bone_poses.has(lower_key)
 		and _final_modified_bone_poses.has(bone_key)
 	):
-		var previous_elbow: Transform3D = _final_modified_bone_poses[lower_key]
-		var previous_wrist: Transform3D = _final_modified_bone_poses[bone_key]
+		var previous_elbow := _previous_control_pose_in_skeleton(lower_key)
+		var previous_wrist := _previous_control_pose_in_skeleton(bone_key)
 		palm_direction = previous_wrist.origin - previous_elbow.origin
 	# A cylinder is visually symmetric under an axis flip, but a human hand is
 	# not. Fix the anatomical branch instead of selecting it from prior-frame
@@ -5243,7 +5785,7 @@ func _control_elbow_pole_boat(
 	# Reproject the last terminal-modifier elbow onto this frame's two-bone circle
 	# so continuity follows the pose that was actually rendered.
 	if _final_modified_bone_poses.has(lower_arm_key):
-		var previous_final_pose: Transform3D = _final_modified_bone_poses[lower_arm_key]
+		var previous_final_pose := _previous_control_pose_in_skeleton(lower_arm_key)
 		previous_final_elbow = _boat.to_local(
 			(_skeleton.global_transform * previous_final_pose).origin
 		)
@@ -5259,7 +5801,7 @@ func _control_elbow_pole_boat(
 		and rendered_bend.length_squared() <= 0.000001
 		and _final_modified_bone_poses.has(hand_key)
 	):
-		var previous_final_hand_pose: Transform3D = _final_modified_bone_poses[hand_key]
+		var previous_final_hand_pose := _previous_control_pose_in_skeleton(hand_key)
 		var previous_final_wrist := _boat.to_local(
 			(_skeleton.global_transform * previous_final_hand_pose).origin
 		)
@@ -5602,6 +6144,13 @@ func _control_elbow_pole_boat(
 	# back into the pole and makes the elbow alternate every frame. Preserve the
 	# actual incumbent inside the existing incidence band; if either pose becomes
 	# unsafe, the guarded transport and emergency arc below still take authority.
+	var incumbent_shaft_dot := absf((solved_wrist - commanded_elbow).normalized().dot(shaft_direction_boat))
+	if tiller_weight > 0.95 and incumbent_shaft_dot > CONTROL_TILLER_FOREARM_SHAFT_MAX_DOT and found_safe_candidate:
+		var natural_elbow := circle_center + best_safe_direction * circle_radius
+		var natural_shaft_dot := absf((solved_wrist - natural_elbow).normalized().dot(shaft_direction_boat))
+		if natural_shaft_dot < incumbent_shaft_dot - 0.01:
+			selected_target = best_safe_direction
+			height_relaxation_active = false
 	var tack_sheet_incumbent_is_usable := (
 		transport_active
 		and tiller_weight <= CONTROL_TILLER_CONTACT_WEIGHT_EPSILON

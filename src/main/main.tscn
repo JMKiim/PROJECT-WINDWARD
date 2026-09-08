@@ -1,16 +1,16 @@
-[gd_scene load_steps=18 format=3]
+[gd_scene format=3 uid="uid://16yvgrv6h6en"]
 
 [ext_resource type="PackedScene" path="res://src/boat/boat.tscn" id="1_boat"]
-[ext_resource type="Script" path="res://src/camera/camera_rig.gd" id="2_camera"]
-[ext_resource type="Script" path="res://src/ui/sailing_hud.gd" id="3_hud"]
-[ext_resource type="Script" path="res://src/environment/sailing_environment.gd" id="4_environment"]
-[ext_resource type="Shader" path="res://src/environment/ocean.gdshader" id="5_ocean_shader"]
-[ext_resource type="Script" path="res://src/environment/ocean_surface.gd" id="6_ocean_surface"]
-[ext_resource type="Script" path="res://src/environment/wind_streaks.gd" id="7_wind_streaks"]
-[ext_resource type="Script" path="res://src/environment/wake_trail.gd" id="8_wake_trail"]
-[ext_resource type="Script" path="res://src/ui/minimap.gd" id="9_minimap"]
-[ext_resource type="Script" path="res://src/environment/hull_flow_cues.gd" id="10_hull_flow"]
-[ext_resource type="Script" path="res://src/environment/world_reference_buoys.gd" id="11_reference_buoys"]
+[ext_resource type="Script" uid="uid://iwmk12wie1mv" path="res://src/camera/camera_rig.gd" id="2_camera"]
+[ext_resource type="Script" uid="uid://bt7hlhh7wqdb5" path="res://src/ui/sailing_hud.gd" id="3_hud"]
+[ext_resource type="Script" uid="uid://bqsjmlc03aleu" path="res://src/environment/sailing_environment.gd" id="4_environment"]
+[ext_resource type="Shader" uid="uid://cn01f4d4oo25e" path="res://src/environment/ocean.gdshader" id="5_ocean_shader"]
+[ext_resource type="Script" uid="uid://j35dp1gxtgmy" path="res://src/environment/ocean_surface.gd" id="6_ocean_surface"]
+[ext_resource type="Script" uid="uid://dcjdg8o57crt4" path="res://src/environment/wind_streaks.gd" id="7_wind_streaks"]
+[ext_resource type="Script" uid="uid://ddier1ccbmwan" path="res://src/environment/wake_trail.gd" id="8_wake_trail"]
+[ext_resource type="Script" uid="uid://csaljq7ylqvnx" path="res://src/ui/minimap.gd" id="9_minimap"]
+[ext_resource type="Script" uid="uid://ymbfp3jb2ad6" path="res://src/environment/hull_flow_cues.gd" id="10_hull_flow"]
+[ext_resource type="Script" uid="uid://ijdg047hg6my" path="res://src/environment/world_reference_buoys.gd" id="11_reference_buoys"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMaterial"]
 sky_top_color = Color(0.12, 0.33, 0.56, 1)
@@ -31,7 +31,22 @@ tonemap_mode = 2
 tonemap_exposure = 0.88
 
 [sub_resource type="ShaderMaterial" id="OceanMaterial"]
+render_priority = 0
 shader = ExtResource("5_ocean_shader")
+shader_parameter/deep_color = Color(0.018, 0.12, 0.2, 1)
+shader_parameter/shallow_color = Color(0.035, 0.3, 0.42, 1)
+shader_parameter/foam_color = Color(0.68, 0.84, 0.88, 1)
+shader_parameter/wind_direction = Vector2(1, 0)
+shader_parameter/secondary_wave_direction = Vector2(0.984, 0.177)
+shader_parameter/surface_flow_offset = Vector2(0, 0)
+shader_parameter/wave_amplitude_scale = 1.0
+shader_parameter/simulation_time = 0.0
+shader_parameter/sea_level = 0.0
+shader_parameter/wave_amplitudes = Vector3(0.105, 0.034, 0.01)
+shader_parameter/wave_numbers = Vector3(0.34, 0.68, 1.48)
+shader_parameter/wave_angular_speeds = Vector3(1.826308, 2.582789, 3.810354)
+shader_parameter/wave_phase_offsets = Vector3(0.47, 2.19, 4.03)
+shader_parameter/cross_swell_strength = 0.36
 
 [sub_resource type="PlaneMesh" id="OceanMesh"]
 size = Vector2(220, 220)
@@ -50,113 +65,124 @@ corner_radius_top_right = 10
 corner_radius_bottom_right = 10
 corner_radius_bottom_left = 10
 
-[node name="Main" type="Node3D"]
+[node name="Main" type="Node3D" unique_id=2056120797]
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1561621905]
 environment = SubResource("Environment")
 
-[node name="Sun" type="DirectionalLight3D" parent="."]
-rotation_degrees = Vector3(-54, -28, 0)
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1745233455]
+transform = Transform3D(0.88294756, 0.37981048, -0.2759485, 0, 0.5877853, 0.809017, 0.46947157, -0.7143196, 0.5189836, 0, 0, 0)
 light_energy = 0.92
 shadow_enabled = true
 
-[node name="SailingEnvironment" type="Node" parent="."]
+[node name="SailingEnvironment" type="Node" parent="." unique_id=98631801]
 script = ExtResource("4_environment")
 
-[node name="Ocean" type="MeshInstance3D" parent="."]
-mesh = SubResource("OceanMesh")
+[node name="Ocean" type="MeshInstance3D" parent="." unique_id=2083548194]
 material_override = SubResource("OceanMaterial")
+mesh = SubResource("OceanMesh")
 script = ExtResource("6_ocean_surface")
 target_path = NodePath("../Boat")
 environment_path = NodePath("../SailingEnvironment")
 
-[node name="Boat" parent="." instance=ExtResource("1_boat")]
-position = Vector3(0, 0.06, 0)
+[node name="Boat" parent="." unique_id=1173878284 instance=ExtResource("1_boat")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.06, 0)
 environment_path = NodePath("../SailingEnvironment")
 
-[node name="WakeTrail" type="MeshInstance3D" parent="."]
+[node name="WakeTrail" type="MeshInstance3D" parent="." unique_id=1676625941]
 script = ExtResource("8_wake_trail")
 boat_path = NodePath("../Boat")
 environment_path = NodePath("../SailingEnvironment")
 
-[node name="HullFlowCues" type="MeshInstance3D" parent="."]
+[node name="HullFlowCues" type="MeshInstance3D" parent="." unique_id=2131573982]
 script = ExtResource("10_hull_flow")
 boat_path = NodePath("../Boat")
 environment_path = NodePath("../SailingEnvironment")
 
-[node name="WorldReferenceBuoys" type="MultiMeshInstance3D" parent="."]
+[node name="WorldReferenceBuoys" type="MultiMeshInstance3D" parent="." unique_id=759308100]
 script = ExtResource("11_reference_buoys")
 environment_path = NodePath("../SailingEnvironment")
 
-[node name="WindStreaks" type="MultiMeshInstance3D" parent="."]
+[node name="WindStreaks" type="MultiMeshInstance3D" parent="." unique_id=1537921224]
 visible = false
 script = ExtResource("7_wind_streaks")
 target_path = NodePath("../Boat")
 environment_path = NodePath("../SailingEnvironment")
 
-[node name="CameraRig" type="Node3D" parent="."]
+[node name="CameraRig" type="Node3D" parent="." unique_id=1685873490]
 script = ExtResource("2_camera")
 target_path = NodePath("../Boat")
 
-[node name="TopDownCamera" type="Camera3D" parent="CameraRig"]
-position = Vector3(0, 18, 13.5)
-fov = 54.0
+[node name="TopDownCamera" type="Camera3D" parent="CameraRig" unique_id=15242982]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 18, 13.5)
 cull_mask = 3
+fov = 54.0
 
-[node name="FirstPersonCamera" type="Camera3D" parent="CameraRig"]
-fov = 72.0
+[node name="FirstPersonCamera" type="Camera3D" parent="CameraRig" unique_id=120203286]
 cull_mask = 5
+fov = 72.0
 near = 0.06
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="HUD" type="CanvasLayer" parent="." unique_id=885542086]
 script = ExtResource("3_hud")
 boat_path = NodePath("../Boat")
 
-[node name="Margin" type="MarginContainer" parent="HUD"]
-mouse_filter = 2
+[node name="Margin" type="MarginContainer" parent="HUD" unique_id=1258827528]
 offset_left = 20.0
 offset_top = 20.0
 offset_right = 250.0
 offset_bottom = 326.0
+mouse_filter = 2
 
-[node name="Panel" type="PanelContainer" parent="HUD/Margin"]
+[node name="Panel" type="PanelContainer" parent="HUD/Margin" unique_id=1275228126]
+layout_mode = 2
 mouse_filter = 2
 theme_override_styles/panel = SubResource("HudPanel")
 
-[node name="Padding" type="MarginContainer" parent="HUD/Margin/Panel"]
+[node name="Padding" type="MarginContainer" parent="HUD/Margin/Panel" unique_id=1709755294]
+layout_mode = 2
 mouse_filter = 2
 theme_override_constants/margin_left = 16
 theme_override_constants/margin_top = 14
 theme_override_constants/margin_right = 16
 theme_override_constants/margin_bottom = 14
 
-[node name="Rows" type="VBoxContainer" parent="HUD/Margin/Panel/Padding"]
+[node name="Rows" type="VBoxContainer" parent="HUD/Margin/Panel/Padding" unique_id=1135192575]
+layout_mode = 2
 mouse_filter = 2
 theme_override_constants/separation = 8
 
-[node name="Title" type="Label" parent="HUD/Margin/Panel/Padding/Rows"]
-mouse_filter = 2
+[node name="Title" type="Label" parent="HUD/Margin/Panel/Padding/Rows" unique_id=389729983]
+layout_mode = 2
 theme_override_colors/font_color = Color(0.93, 0.98, 1, 1)
 theme_override_font_sizes/font_size = 24
 text = "WINDWARD"
 
-[node name="CameraMode" type="Label" parent="HUD/Margin/Panel/Padding/Rows"]
-mouse_filter = 2
+[node name="CameraMode" type="Label" parent="HUD/Margin/Panel/Padding/Rows" unique_id=1808694889]
+layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.85, 1, 1)
 text = "카메라  탑다운"
 
-[node name="Telemetry" type="Label" parent="HUD/Margin/Panel/Padding/Rows"]
-mouse_filter = 2
+[node name="Telemetry" type="Label" parent="HUD/Margin/Panel/Padding/Rows" unique_id=259763890]
+layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.94, 0.96, 1)
-text = "대수속도  0.0 kn\n지상속도  0.0 kn\n진풍  11.7 kn\n상대풍  11.7 kn\n풍각  90°\n조류  0.3 kn\n시트  45%\n붐  +38°"
+text = "대수속도  0.0 kn
+지상속도  0.0 kn
+진풍  11.7 kn
+상대풍  11.7 kn
+풍각  90°
+조류  0.3 kn
+시트  45%
+붐  +38°"
 
-[node name="Controls" type="Label" parent="HUD/Margin/Panel/Padding/Rows"]
-mouse_filter = 2
+[node name="Controls" type="Label" parent="HUD/Margin/Panel/Padding/Rows" unique_id=1285702759]
+layout_mode = 2
 theme_override_colors/font_color = Color(0.68, 0.75, 0.78, 1)
 theme_override_font_sizes/font_size = 12
-text = "A/D 러더 · W/S 시트 · C 카메라\n탑다운: 휠 확대/축소 · 1인칭: 마우스 시선"
+text = "A/D 러더 · W/S 시트 · C 카메라
+탑다운: 휠 확대/축소 · 1인칭: 마우스 시선"
 
-[node name="MiniMap" type="Control" parent="HUD"]
+[node name="MiniMap" type="Control" parent="HUD" unique_id=1624970855]
 layout_mode = 3
 anchors_preset = 1
 anchor_left = 1.0

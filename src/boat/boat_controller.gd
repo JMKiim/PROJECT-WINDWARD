@@ -5,7 +5,7 @@ const MAX_RUDDER_VISUAL_ANGLE := deg_to_rad(12.0)
 const TILLER_EXTENSION_SHAFT_LENGTH := 1.10
 const TILLER_EXTENSION_MIN_HAND_DISTANCE := IlcaHardwarePart.TILLER_EXTENSION_GRIP_MIN_DISTANCE
 const TILLER_EXTENSION_MAX_HAND_DISTANCE := IlcaHardwarePart.TILLER_EXTENSION_GRIP_MAX_DISTANCE
-const TILLER_EXTENSION_ENTRY_PREPOSITION_MIN_HAND_DISTANCE := 0.85
+const TILLER_EXTENSION_ENTRY_PREPOSITION_MIN_HAND_DISTANCE := TILLER_EXTENSION_MIN_HAND_DISTANCE
 const TILLER_EXTENSION_UPRIGHT_HAND_DISTANCE := 0.60
 const TILLER_EXTENSION_NORMAL_FAR_HAND_DISTANCE := 0.80
 const TILLER_EXTENSION_HAND_SLIDE_SPEED := 0.45
@@ -19,6 +19,14 @@ const TILLER_EXTENSION_WORKING_CONTACT_LATERAL := 0.30
 const TILLER_EXTENSION_WORKING_CONTACT_HEIGHT := 0.78
 const TILLER_EXTENSION_WORKING_CONTACT_AFT := 0.70
 const TILLER_EXTENSION_WORKING_CONTACT_WEIGHT := 3.0
+# Steering changes the chest-front contact in the sailor's forward direction.
+# These are palm targets, not extra motion added after physical contact solving.
+const TILLER_EXTENSION_STEERING_CONTACT_STROKE := 0.060
+const TILLER_EXTENSION_STEERING_PULL_FORWARD_ARC := 0.10
+const TILLER_EXTENSION_STEERING_PULL_LIFT := 0.12
+const TILLER_EXTENSION_STEERING_PULL_LIFT_ENTRY := 0.02
+const TILLER_EXTENSION_STEERING_NEUTRAL_LIFT_RESERVE := 0.006
+const TILLER_EXTENSION_NEUTRAL_CATCHUP_DISTANCE := 0.060
 const TILLER_EXTENSION_COMFORT_REACH_MIN := 0.30
 const TILLER_EXTENSION_COMFORT_REACH_TARGET := 0.37
 const TILLER_EXTENSION_COMFORT_REACH_MAX := 0.46
@@ -60,12 +68,11 @@ const TILLER_EXTENSION_SPRING_STIFFNESS := 144.0
 const TILLER_EXTENSION_SPRING_DAMPING := 24.0
 const TILLER_EXTENSION_MAX_ANGULAR_SPEED := 1.8
 const TILLER_EXTENSION_MAX_SUBSTEP := 1.0 / 120.0
-# A slow render/modifier generation may contain many fixed substeps. Bound the
-# *published* pair as well as each substep so one heavy exit solve cannot carry
-# the hand several centimetres or invalidate the incumbent elbow branch in one
-# visible pose.
-const TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE := deg_to_rad(2.5)
-const TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE := 0.012
+# Bound the published pair by elapsed time as well as its collision-tested
+# substeps. These match the former 2.5 degree / 12 mm limits at 60 Hz without
+# halving the available movement at 30 Hz or doubling it at 120 Hz.
+const TILLER_EXTENSION_VISIBLE_DIRECTION_SPEED := deg_to_rad(150.0)
+const TILLER_EXTENSION_VISIBLE_DISTANCE_SPEED := 0.72
 const TILLER_EXTENSION_PAIR_DIRECTION_COUPLING_EPSILON := deg_to_rad(0.10)
 const TILLER_EXTENSION_PAIR_DISTANCE_COUPLING_EPSILON := 0.001
 const TILLER_EXTENSION_SHAFT_CLEARANCE := 0.013
@@ -106,6 +113,16 @@ enum TillerExtensionPairMode {
 
 var sailing_state := SailingState.new()
 var sailing_command := SailingCommand.new()
+var _body_pose_search_cursors: Dictionary = {}
+var _body_pose_skip_direct: Dictionary = {}
+var maneuver_profile: Dictionary = {
+	"resolve_us": 0,
+	"preview_us": 0,
+	"search_us": 0,
+	"resolve_calls": 0,
+	"preview_calls": 0,
+	"search_calls": 0,
+}
 var _effective_sailing_command := SailingCommand.new()
 var _heave_position := FLOAT_ORIGIN_OFFSET
 var _heave_velocity := 0.0
@@ -154,6 +171,7 @@ var _tiller_extension_seated_return_step_permit := false
 var _tiller_extension_driven_pair_mode := TillerExtensionPairMode.NONE
 var _tiller_extension_driven_target_direction_rudder := Vector3.FORWARD
 var _tiller_extension_driven_target_distance := TILLER_EXTENSION_UPRIGHT_HAND_DISTANCE
+var _tiller_extension_maneuver_pair_delta := 0.0
 
 
 func _ready() -> void:
@@ -364,6 +382,9 @@ func resolve_tiller_extension(
 	# that can pass through the rendered thighs.
 	if body_capsules.size() < 3:
 		_tiller_extension_blocked = true
+		return
+	if sailor.maneuver_active():
+		_resolve_maneuver_tiller_extension(delta, body_capsules, immediate)
 		return
 	# Direction and grip distance form one physical state during the route exit.
 	# Starting at 72% keeps the torso from overtaking a centreline grip while the
@@ -983,58 +1004,9 @@ func resolve_tiller_extension(
 			normal_side,
 			requested_hand_distance
 		)
-		if normal_pair.is_empty():
-			_tiller_extension_blocked = true
-			_tiller_extension_angular_velocity = Vector3.ZERO
-			return
-		_record_tiller_extension_driven_pair(
-			TillerExtensionPairMode.NORMAL,
-			normal_pair["direction"],
-			normal_pair["distance"]
+		_tiller_extension_seated_return_step_permit = _resolve_normal_tiller_extension_transaction(
+			delta, joint_boat, body_capsules, normal_side, normal_pair, immediate
 		)
-		if not _advance_tiller_extension_pair(
-			delta,
-			normal_pair["direction"],
-			normal_pair["distance"],
-			joint_boat,
-			body_capsules,
-			normal_side,
-			false,
-			TILLER_EXTENSION_HARD_JOINT_ANGLE,
-			immediate
-		):
-			_tiller_extension_blocked = true
-			# A bounded NORMAL recovery may have advanced the internal pair toward
-			# clearance even though it has not reached a fully safe state yet. Publish
-			# that verified monotonic progress so the rendered shaft and the arm target
-			# never lag behind the state that the next resolve will continue from.
-			_publish_tiller_extension_pose()
-			return
-		_tiller_extension_blocked = false
-		_tiller_extension_seated_return_step_permit = (
-			not _tiller_extension_handover_route_active
-			and _tiller_extension_pair_is_safe(
-				_tiller_extension_direction_rudder,
-				_tiller_extension_hand_distance,
-				joint_boat,
-				body_capsules,
-				false,
-				TILLER_EXTENSION_HARD_JOINT_ANGLE,
-				normal_side
-			)
-			and bool(_tiller_extension_candidate_wrist_guard(
-				_tiller_extension_direction_rudder,
-				_tiller_extension_hand_distance,
-				joint_boat
-			).get("safe", false))
-			and _tiller_extension_pair_clearance_margin(
-				_tiller_extension_direction_rudder,
-				_tiller_extension_hand_distance,
-				joint_boat,
-				body_capsules
-			) >= TILLER_EXTENSION_EXIT_GUARD_CLEARANCE
-		)
-		_publish_tiller_extension_pose()
 		return
 	# The remaining active route is the central 0..72% handover. Resolve shaft
 	# direction and freely selected foam contact as one pair so neither hand is
@@ -1297,13 +1269,681 @@ func consume_tiller_extension_seated_return_step_permission() -> bool:
 	return true
 
 
+func prepare_tiller_extension_body_pose_frame() -> void:
+	if (
+		not is_instance_valid(rudder_pivot)
+		or not is_instance_valid(tiller_extension_pivot)
+		or not _tiller_extension_initialized
+		or not _tiller_extension_hand_distance_initialized
+		or not _tiller_extension_rudder_basis_initialized
+	):
+		return
+	# Physics can move the rudder before the body tests its next pose. Prepare the
+	# shared coordinate frame explicitly before any read-only trial or pair commit.
+	_rebase_tiller_extension_state_to_current_rudder_basis(
+		rudder_pivot.transform * tiller_extension_pivot.position
+	)
+
+
+func capture_tiller_extension_body_pose_pair_state() -> Dictionary:
+	if (
+		not is_instance_valid(rudder_pivot)
+		or not is_instance_valid(tiller_extension_pivot)
+		or not _tiller_extension_initialized
+		or not _tiller_extension_hand_distance_initialized
+		or not _tiller_extension_rudder_basis_initialized
+	):
+		return {}
+	return {
+		"direction": _tiller_extension_direction_rudder,
+		"distance": _tiller_extension_hand_distance,
+		"last_safe_direction": _tiller_extension_last_safe_direction,
+		"last_safe_distance": _tiller_extension_last_safe_hand_distance,
+		"angular_velocity": _tiller_extension_angular_velocity,
+		"initialized": _tiller_extension_initialized,
+		"distance_initialized": _tiller_extension_hand_distance_initialized,
+		"rudder_basis": _tiller_extension_last_rudder_basis,
+		"joint_boat": _tiller_extension_last_joint_boat,
+		"basis_initialized": _tiller_extension_rudder_basis_initialized,
+		"driven_mode": _tiller_extension_driven_pair_mode,
+		"driven_direction": _tiller_extension_driven_target_direction_rudder,
+		"driven_distance": _tiller_extension_driven_target_distance,
+		"active_joint_limit": _tiller_extension_active_joint_limit,
+		"route_active": _tiller_extension_handover_route_active,
+		"exit_ready": _tiller_extension_exit_align_ready,
+	}
+
+
+func restore_tiller_extension_body_pose_pair_state(
+	snapshot: Dictionary,
+	body_capsules: Array,
+	side: float,
+	handover: bool
+) -> bool:
+	# This restores a coupled body/shaft trial inside one prepared physics frame.
+	# A snapshot from a different rudder frame cannot rewind the rudder itself.
+	for key in [
+		"direction", "distance", "last_safe_direction", "last_safe_distance",
+		"angular_velocity", "initialized", "distance_initialized", "rudder_basis",
+		"joint_boat", "basis_initialized", "driven_mode", "driven_direction",
+		"driven_distance", "active_joint_limit", "route_active", "exit_ready",
+	]:
+		if not snapshot.has(key):
+			_tiller_extension_blocked = true
+			_tiller_extension_maneuver_pair_delta = 0.0
+			return false
+	if (
+		not is_instance_valid(rudder_pivot)
+		or not is_instance_valid(tiller_extension_pivot)
+		or not bool(snapshot["initialized"])
+		or not bool(snapshot["distance_initialized"])
+		or not bool(snapshot["basis_initialized"])
+		or snapshot["rudder_basis"] != rudder_pivot.basis.orthonormalized()
+		or snapshot["joint_boat"] != rudder_pivot.transform * tiller_extension_pivot.position
+		or not tiller_extension_pair_accepts_body_pose(body_capsules, side, handover, snapshot)
+	):
+		_tiller_extension_blocked = true
+		_tiller_extension_maneuver_pair_delta = 0.0
+		return false
+	_tiller_extension_direction_rudder = snapshot["direction"]
+	_tiller_extension_hand_distance = float(snapshot["distance"])
+	_tiller_extension_last_safe_direction = snapshot["last_safe_direction"]
+	_tiller_extension_last_safe_hand_distance = float(snapshot["last_safe_distance"])
+	_tiller_extension_angular_velocity = snapshot["angular_velocity"]
+	_tiller_extension_initialized = bool(snapshot["initialized"])
+	_tiller_extension_hand_distance_initialized = bool(snapshot["distance_initialized"])
+	_tiller_extension_last_rudder_basis = snapshot["rudder_basis"]
+	_tiller_extension_last_joint_boat = snapshot["joint_boat"]
+	_tiller_extension_rudder_basis_initialized = bool(snapshot["basis_initialized"])
+	_tiller_extension_driven_pair_mode = int(snapshot["driven_mode"]) as TillerExtensionPairMode
+	_tiller_extension_driven_target_direction_rudder = snapshot["driven_direction"]
+	_tiller_extension_driven_target_distance = float(snapshot["driven_distance"])
+	_tiller_extension_active_joint_limit = float(snapshot["active_joint_limit"])
+	_tiller_extension_handover_route_active = bool(snapshot["route_active"])
+	_tiller_extension_exit_align_ready = bool(snapshot["exit_ready"])
+	_tiller_extension_maneuver_pair_delta = 0.0
+	_tiller_extension_seated_return_step_permit = false
+	_publish_tiller_extension_pose()
+	_tiller_extension_blocked = true
+	return true
+
+
+func _resolve_normal_tiller_extension_transaction(
+	delta: float,
+	joint_boat: Vector3,
+	body_capsules: Array,
+	side: float,
+	target_pair: Dictionary,
+	immediate: bool
+) -> bool:
+	# An active-to-normal transition can commit its last body/shaft step before
+	# reaching this solve. Ordinary steering may spend only that frame's remainder.
+	var pair_delta := maxf(delta - _tiller_extension_maneuver_pair_delta, 0.0)
+	_tiller_extension_maneuver_pair_delta = 0.0
+	var previous_direction := _tiller_extension_direction_rudder
+	var previous_distance := _tiller_extension_hand_distance
+	var previous_safe_direction := _tiller_extension_last_safe_direction
+	var previous_safe_distance := _tiller_extension_last_safe_hand_distance
+	var previous_velocity := _tiller_extension_angular_velocity
+	var previous_initialized := _tiller_extension_initialized
+	var previous_distance_initialized := _tiller_extension_hand_distance_initialized
+	var previous_pair := {"direction": previous_direction, "distance": previous_distance}
+	# Capture eligibility before either spring or recovery routine mutates the
+	# current pair. Unsafe starting poses still retain their full recovery path.
+	var require_neutral_progress := (
+		not target_pair.is_empty()
+		and not sailor.maneuver_active()
+		and absf(sailing_command.rudder) <= 0.001
+		and absf(rudder_pivot.rotation.y) <= deg_to_rad(1.0)
+		and previous_initialized and previous_distance_initialized
+		and tiller_extension_pair_accepts_body_pose(body_capsules, side, false, previous_pair)
+	)
+	if not target_pair.is_empty():
+		_record_tiller_extension_driven_pair(
+			TillerExtensionPairMode.NORMAL, target_pair["direction"], target_pair["distance"]
+		)
+		var return_pair := _normal_tiller_neutral_return_pair(pair_delta, joint_boat, target_pair)
+		if (
+			not return_pair.is_empty()
+			and tiller_extension_pair_accepts_body_pose(body_capsules, side, false, return_pair)
+			and _tiller_extension_body_pose_pair_midpoint_is_safe(return_pair, body_capsules, side, false)
+			and commit_tiller_extension_body_pose_pair(return_pair)
+		):
+			_tiller_extension_maneuver_pair_delta = 0.0
+			return true
+		_advance_tiller_extension_pair(
+			pair_delta, target_pair["direction"], target_pair["distance"], joint_boat,
+			body_capsules, side, false, TILLER_EXTENSION_HARD_JOINT_ANGLE, immediate
+		)
+		var proposed := {
+			"direction": _tiller_extension_direction_rudder,
+			"distance": _tiller_extension_hand_distance,
+			"from_direction": previous_direction,
+			"from_distance": previous_distance,
+		}
+		var proposed_progresses := (
+			not require_neutral_progress
+			or _normal_tiller_fallback_reduces_contact_error(
+				previous_pair, proposed, target_pair, joint_boat, rudder_pivot.basis
+			)
+		)
+		if (
+			proposed_progresses
+			and tiller_extension_pair_accepts_body_pose(body_capsules, side, false, proposed)
+			and (
+				not previous_initialized
+				or not previous_distance_initialized
+				or _tiller_extension_body_pose_pair_midpoint_is_safe(proposed, body_capsules, side, false)
+			)
+		):
+			_tiller_extension_last_safe_direction = _tiller_extension_direction_rudder
+			_tiller_extension_last_safe_hand_distance = _tiller_extension_hand_distance
+			_tiller_extension_blocked = false
+			_publish_tiller_extension_pose()
+			return true
+	# The spring and recovery routines may change several coupled fields before
+	# returning. Roll all of them back before seeking a strict bounded alternative.
+	_tiller_extension_direction_rudder = previous_direction
+	_tiller_extension_hand_distance = previous_distance
+	_tiller_extension_last_safe_direction = previous_safe_direction
+	_tiller_extension_last_safe_hand_distance = previous_safe_distance
+	_tiller_extension_angular_velocity = previous_velocity
+	_tiller_extension_initialized = previous_initialized
+	_tiller_extension_hand_distance_initialized = previous_distance_initialized
+	var alternative := preview_tiller_extension_pair_for_body_pose(body_capsules, side, false, pair_delta, 0, target_pair)
+	var alternative_progresses := (
+		not require_neutral_progress
+		or _normal_tiller_fallback_reduces_contact_error(
+			previous_pair, alternative, target_pair, joint_boat, rudder_pivot.basis
+		)
+	)
+	if (
+		not alternative.is_empty()
+		and alternative_progresses
+		and _tiller_extension_body_pose_pair_midpoint_is_safe(alternative, body_capsules, side, false)
+		and commit_tiller_extension_body_pose_pair(alternative)
+	):
+		_tiller_extension_initialized = true
+		_tiller_extension_hand_distance_initialized = true
+		_tiller_extension_maneuver_pair_delta = 0.0
+		_tiller_extension_blocked = false
+		return true
+	_tiller_extension_angular_velocity = Vector3.ZERO
+	_tiller_extension_blocked = not (
+		previous_initialized
+		and previous_distance_initialized
+		and tiller_extension_pair_accepts_body_pose(body_capsules, side, false)
+	)
+	if not _tiller_extension_blocked:
+		_publish_tiller_extension_pose()
+		return true
+	return false
+
+
+static func _normal_tiller_fallback_reduces_contact_error(
+	current_pair: Dictionary,
+	candidate_pair: Dictionary,
+	target_pair: Dictionary,
+	joint_boat: Vector3,
+	rudder_basis: Basis
+) -> bool:
+	# A safe neutral hold must not chase a rejected target by sliding farther
+	# away from it. Compare the actual palm contact, not independent angle and
+	# distance scores which can improve one coordinate while worsening the grip.
+	if current_pair.is_empty() or candidate_pair.is_empty() or target_pair.is_empty():
+		return false
+	var current_contact := joint_boat + rudder_basis * Vector3(current_pair["direction"]) * float(current_pair["distance"])
+	var candidate_contact := joint_boat + rudder_basis * Vector3(candidate_pair["direction"]) * float(candidate_pair["distance"])
+	var target_contact := joint_boat + rudder_basis * Vector3(target_pair["direction"]) * float(target_pair["distance"])
+	if not current_contact.is_finite() or not candidate_contact.is_finite() or not target_contact.is_finite():
+		return false
+	return candidate_contact.distance_to(target_contact) < current_contact.distance_to(target_contact) - 0.00001
+
+
+func _normal_tiller_neutral_return_pair(delta: float, joint_boat: Vector3, target_pair: Dictionary) -> Dictionary:
+	# The rudder already eases to neutral. Near its endpoint, a second angular
+	# spring can leave the coupled hand contact drifting long after release.
+	# Complete only that small remainder at the existing physical slide speed.
+	if (
+		delta <= 0.0 or not _tiller_extension_initialized or not _tiller_extension_hand_distance_initialized
+		or absf(sailing_command.rudder) > 0.001 or absf(rudder_pivot.rotation.y) > deg_to_rad(1.0)
+		or sailor.maneuver_active()
+	):
+		return {}
+	var from_direction := _tiller_extension_direction_rudder
+	var from_distance := _tiller_extension_hand_distance
+	var target_direction: Vector3 = target_pair["direction"]
+	var target_distance := float(target_pair["distance"])
+	var from_contact := joint_boat + rudder_pivot.basis * from_direction * from_distance
+	var target_contact := joint_boat + rudder_pivot.basis * target_direction * target_distance
+	var contact_error := from_contact.distance_to(target_contact)
+	if contact_error > TILLER_EXTENSION_NEUTRAL_CATCHUP_DISTANCE:
+		return {}
+	var fraction := 1.0
+	var direction_error := from_direction.angle_to(target_direction)
+	var distance_error := absf(target_distance - from_distance)
+	if direction_error > 0.000001:
+		fraction = minf(fraction, _tiller_extension_direction_step_budget(delta) / direction_error)
+	if distance_error > 0.000001:
+		fraction = minf(fraction, _tiller_extension_distance_step_budget(delta) / distance_error)
+	if contact_error > 0.000001:
+		fraction = minf(fraction, TILLER_EXTENSION_HAND_SLIDE_SPEED * minf(delta, 0.10) / contact_error)
+	return {
+		"from_direction": from_direction, "from_distance": from_distance,
+		"direction": from_direction.slerp(target_direction, fraction).normalized(),
+		"distance": lerpf(from_distance, target_distance, fraction), "delta": delta,
+	}
+
+
+func _tiller_extension_body_pose_pair_midpoint_is_safe(
+	pair: Dictionary,
+	body_capsules: Array,
+	side: float,
+	handover: bool
+) -> bool:
+	var from_direction: Vector3 = pair.get("from_direction", _tiller_extension_direction_rudder)
+	var target_direction: Vector3 = pair["direction"]
+	var midpoint := {
+		"direction": from_direction.slerp(target_direction, 0.5).normalized(),
+		"distance": lerpf(float(pair.get("from_distance", _tiller_extension_hand_distance)), float(pair["distance"]), 0.5),
+	}
+	return tiller_extension_pair_accepts_body_pose(body_capsules, side, handover, midpoint)
+
+
+func tiller_extension_pair_accepts_body_pose(
+	body_capsules: Array,
+	side: float,
+	handover: bool,
+	pair: Dictionary = {}
+) -> bool:
+	# The caller applies a complete trial body pose before this read-only check.
+	# Wrist prediction therefore reads the same shoulders as these capsules.
+	if body_capsules.size() < 3 or not is_instance_valid(sailor):
+		return false
+	var direction: Vector3 = pair.get("direction", _tiller_extension_direction_rudder)
+	var distance := float(pair.get("distance", _tiller_extension_hand_distance))
+	if (
+		not direction.is_finite()
+		or direction.length_squared() <= 0.000001
+		or not is_finite(distance)
+		or distance < TILLER_EXTENSION_MIN_HAND_DISTANCE
+		or distance > TILLER_EXTENSION_MAX_HAND_DISTANCE
+	):
+		return false
+	var joint_boat := rudder_pivot.transform * tiller_extension_pivot.position
+	var max_angle := (
+		TILLER_EXTENSION_HANDOVER_HARD_JOINT_ANGLE
+		if handover
+		else TILLER_EXTENSION_HARD_JOINT_ANGLE
+	)
+	return (
+		_tiller_extension_pair_is_safe(
+			direction, distance, joint_boat, body_capsules, handover, max_angle, side
+		)
+		and _tiller_extension_pair_clearance_margin(
+			direction, distance, joint_boat, body_capsules
+		) >= TILLER_EXTENSION_CENTRAL_BODY_CLEARANCE
+		and bool(_tiller_extension_candidate_wrist_guard(
+			direction, distance, joint_boat, true
+		).get("safe", false))
+	)
+
+
+func preview_tiller_extension_pair_for_body_pose(
+	body_capsules: Array,
+	side: float,
+	handover: bool,
+	delta: float,
+	search_channel: int = 0,
+	target_hint: Dictionary = {}
+) -> Dictionary:
+	var started_us := Time.get_ticks_usec()
+	var result := _preview_tiller_extension_pair_for_body_pose_impl(
+		body_capsules, side, handover, delta, search_channel, target_hint
+	)
+	maneuver_profile["preview_us"] = int(maneuver_profile["preview_us"]) + Time.get_ticks_usec() - started_us
+	maneuver_profile["preview_calls"] = int(maneuver_profile["preview_calls"]) + 1
+	return result
+
+
+func _preview_tiller_extension_pair_for_body_pose_impl(
+	body_capsules: Array,
+	side: float,
+	handover: bool,
+	delta: float,
+	search_channel: int,
+	target_hint: Dictionary
+) -> Dictionary:
+	# Return a bounded proposal only. The body owner verifies the coupled body /
+	# shaft sweep before committing; a safe future endpoint alone is insufficient.
+	if body_capsules.size() < 3 or delta <= 0.0:
+		return {}
+	var joint_boat := rudder_pivot.transform * tiller_extension_pivot.position
+	var desired_contact := sailor.tiller_control_target_boat_position(
+		sailing_command.rudder
+	)
+	var desired_vector := desired_contact - joint_boat
+	if desired_vector.length_squared() <= 0.000001:
+		return {}
+	var target_direction := (
+		rudder_pivot.basis.inverse() * desired_vector.normalized()
+	).normalized()
+	var target_distance := clampf(
+		desired_vector.length(),
+		TILLER_EXTENSION_MIN_HAND_DISTANCE,
+		TILLER_EXTENSION_MAX_HAND_DISTANCE
+	)
+	var normal_requested := not handover or sailor.maneuver_phase_name() == &"sit"
+	var target_pair: Dictionary = target_hint
+	if target_pair.is_empty() and not normal_requested:
+		var raw_pair := {"direction": target_direction, "distance": target_distance}
+		if tiller_extension_pair_accepts_body_pose(body_capsules, side, handover, raw_pair):
+			target_pair = raw_pair
+	if normal_requested and target_pair.is_empty():
+		target_pair = _find_safe_normal_tiller_extension_pair(
+			joint_boat, body_capsules, side, target_distance, false, false, false
+		)
+	if target_pair.is_empty() and handover:
+		target_pair = _find_safe_handover_tiller_extension_pair(
+			target_direction, target_distance, joint_boat, body_capsules, side,
+			TILLER_EXTENSION_MIN_HAND_DISTANCE, TILLER_EXTENSION_CENTRAL_BODY_CLEARANCE
+		)
+	if not target_pair.is_empty():
+		target_direction = target_pair["direction"]
+		target_distance = float(target_pair["distance"])
+	var direction_budget := _tiller_extension_direction_step_budget(delta)
+	var distance_budget := _tiller_extension_distance_step_budget(delta)
+	var current_direction := _tiller_extension_direction_rudder.normalized()
+	var current_distance := _tiller_extension_hand_distance
+	var target_angle := current_direction.angle_to(target_direction)
+	var target_fraction := 1.0
+	if target_angle > 0.000001:
+		target_fraction = minf(target_fraction, direction_budget / target_angle)
+	if absf(target_distance - current_distance) > 0.000001:
+		target_fraction = minf(
+			target_fraction, distance_budget / absf(target_distance - current_distance)
+		)
+	var direct_pair := {
+		"direction": current_direction.slerp(target_direction, clampf(target_fraction, 0.0, 1.0)).normalized(),
+		"distance": lerpf(current_distance, target_distance, clampf(target_fraction, 0.0, 1.0)),
+		"from_direction": current_direction, "from_distance": current_distance, "delta": delta,
+		"search_channel": search_channel,
+	}
+	if not bool(_body_pose_skip_direct.get(search_channel, false)) and tiller_extension_pair_accepts_body_pose(body_capsules, side, handover, direct_pair):
+		return direct_pair
+	var directions: Array[Vector3] = [
+		current_direction,
+		current_direction.slerp(target_direction, clampf(target_fraction, 0.0, 1.0)).normalized(),
+		current_direction.slerp(
+			target_direction, minf(1.0, direction_budget / maxf(target_angle, 0.000001))
+		).normalized(),
+	]
+	var tangent_up := Vector3.UP - current_direction * current_direction.dot(Vector3.UP)
+	if tangent_up.length_squared() <= 0.000001:
+		tangent_up = Vector3.RIGHT - current_direction * current_direction.dot(Vector3.RIGHT)
+	tangent_up = tangent_up.normalized()
+	var tangent_side := current_direction.cross(tangent_up).normalized()
+	for sample_index in range(8):
+		var angle := float(sample_index) * TAU / 8.0
+		var tangent := tangent_up * cos(angle) + tangent_side * sin(angle)
+		directions.append((
+			current_direction * cos(direction_budget) + tangent * sin(direction_budget)
+		).normalized())
+	var distances: Array[float] = [
+		current_distance,
+		lerpf(current_distance, target_distance, clampf(target_fraction, 0.0, 1.0)),
+		move_toward(current_distance, target_distance, distance_budget),
+	]
+	for amount in [-1.0, -0.5, 0.5, 1.0]:
+		distances.append(clampf(
+			current_distance + float(amount) * distance_budget,
+			TILLER_EXTENSION_MIN_HAND_DISTANCE,
+			TILLER_EXTENSION_MAX_HAND_DISTANCE
+		))
+	var candidates: Array[Dictionary] = []
+	for direction in directions:
+		for distance in distances:
+			var pair := {"direction": direction, "distance": distance}
+			var score := (
+				direction.angle_to(target_direction) * 2.0
+				+ absf(distance - target_distance)
+				+ direction.angle_to(current_direction) * 0.05
+				+ absf(distance - current_distance) * 0.10
+			)
+			if not score < INF:
+				continue
+			candidates.append({"pair": pair, "score": score, "order": candidates.size()})
+	# The score is independent of the expensive arm guard. Start each search in
+	# ascending order, retaining first occurrence order for equal scores.
+	candidates.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		if float(first["score"]) == float(second["score"]):
+			return int(first["order"]) < int(second["order"])
+		return float(first["score"]) < float(second["score"])
+	)
+	# A rejected sweep resumes after its last endpoint candidate. Only the index
+	# survives; every pair is checked against the live body, contact and history.
+	var visit_count := mini(4, candidates.size())
+	var cursor := int(_body_pose_search_cursors.get(search_channel, 0))
+	for visit in range(visit_count):
+		var index := (cursor + visit) % candidates.size()
+		var pair: Dictionary = candidates[index]["pair"]
+		var candidate_direction: Vector3 = pair["direction"]
+		if candidate_direction.angle_to(current_direction) < 0.000001 and absf(float(pair["distance"]) - current_distance) < 0.000001:
+			# Holding is the caller's fallback, not progress toward an unreachable
+			# target. Returning it here restarted the same search every frame.
+			continue
+		if not tiller_extension_pair_accepts_body_pose(body_capsules, side, handover, pair):
+			continue
+		_body_pose_search_cursors[search_channel] = (index + 1) % candidates.size()
+		pair["from_direction"] = current_direction
+		pair["from_distance"] = current_distance
+		pair["delta"] = delta
+		pair["search_channel"] = search_channel
+		return pair
+	if not candidates.is_empty():
+		_body_pose_search_cursors[search_channel] = (cursor + visit_count) % candidates.size()
+	return {}
+
+
+func reject_tiller_extension_body_pose_pair(pair: Dictionary) -> void:
+	# Endpoint approval is not sweep approval. Do not retry the same direct
+	# endpoint forever when the caller rejects its intervening body path.
+	_body_pose_skip_direct[int(pair.get("search_channel", 0))] = true
+
+
+func mark_tiller_extension_control_pose_blocked() -> void:
+	_tiller_extension_blocked = true
+	_tiller_extension_maneuver_pair_delta = 0.0
+
+
+func tiller_extension_body_pose_pair_path_is_safe(
+	pair: Dictionary,
+	body_capsules: Array,
+	side: float,
+	handover: bool
+) -> bool:
+	if not pair.has("direction") or not pair.has("distance"):
+		return false
+	var target_direction: Vector3 = pair["direction"]
+	var target_distance := float(pair["distance"])
+	for sample_index in range(9):
+		var amount := float(sample_index) / 8.0
+		var sample := {
+			"direction": _tiller_extension_direction_rudder.slerp(target_direction, amount).normalized(),
+			"distance": lerpf(_tiller_extension_hand_distance, target_distance, amount),
+		}
+		if not tiller_extension_pair_accepts_body_pose(body_capsules, side, handover, sample):
+			return false
+	return true
+
+
+func commit_tiller_extension_body_pose_pair(pair: Dictionary) -> bool:
+	# Only proposals derived from the still-current pair can be committed. The
+	# caller has already validated the old, midpoint and future body poses.
+	if not pair.has("from_direction") or not pair.has("from_distance"):
+		return false
+	var from_direction: Vector3 = pair["from_direction"]
+	if (
+		from_direction.angle_to(_tiller_extension_direction_rudder) > 0.00001
+		or absf(float(pair["from_distance"]) - _tiller_extension_hand_distance) > 0.00001
+	):
+		return false
+	var direction: Vector3 = pair.get("direction", Vector3.ZERO)
+	var distance := float(pair.get("distance", -1.0))
+	var delta := float(pair.get("delta", 0.0))
+	if (
+		not direction.is_finite()
+		or direction.length_squared() <= 0.000001
+		or not is_finite(distance)
+		or distance < TILLER_EXTENSION_MIN_HAND_DISTANCE
+		or distance > TILLER_EXTENSION_MAX_HAND_DISTANCE
+		or from_direction.angle_to(direction) > _tiller_extension_direction_step_budget(delta) + 0.00001
+		or absf(distance - float(pair["from_distance"])) > _tiller_extension_distance_step_budget(delta) + 0.00001
+	):
+		return false
+	_tiller_extension_direction_rudder = direction.normalized()
+	_tiller_extension_hand_distance = distance
+	_tiller_extension_last_safe_direction = _tiller_extension_direction_rudder
+	_tiller_extension_last_safe_hand_distance = distance
+	_tiller_extension_angular_velocity = Vector3.ZERO
+	_tiller_extension_blocked = false
+	_tiller_extension_maneuver_pair_delta += delta
+	var search_channel := int(pair.get("search_channel", 0))
+	_body_pose_search_cursors[search_channel] = 0
+	_body_pose_skip_direct[search_channel] = false
+	_publish_tiller_extension_pose()
+	return true
+
+
+func _resolve_maneuver_tiller_extension(
+	delta: float,
+	body_capsules: Array,
+	immediate: bool
+) -> void:
+	var started_us := Time.get_ticks_usec()
+	_resolve_maneuver_tiller_extension_impl(delta, body_capsules, immediate)
+	maneuver_profile["resolve_us"] = int(maneuver_profile["resolve_us"]) + Time.get_ticks_usec() - started_us
+	maneuver_profile["resolve_calls"] = int(maneuver_profile["resolve_calls"]) + 1
+
+
+func _resolve_maneuver_tiller_extension_impl(
+	delta: float,
+	body_capsules: Array,
+	immediate: bool
+) -> void:
+	# Trial-pose transactions and this final modifier solve share one time budget.
+	# Reset before target selection so a rejected target cannot retain spent time
+	# into the following render generation.
+	var pair_delta := maxf(delta - _tiller_extension_maneuver_pair_delta, 0.0)
+	_tiller_extension_maneuver_pair_delta = 0.0
+	# Time-driven body poses already own entry, crossing and seating. The shaft
+	# follows their anatomical target without restarting the old upper route or
+	# demanding one fully settled endpoint before every body movement.
+	_tiller_extension_entry_align_active = false
+	_tiller_extension_entry_step_permit = false
+	_tiller_extension_entry_bridge_active = false
+	_tiller_extension_central_step_permit = false
+	_tiller_extension_central_bridge_active = false
+	_tiller_extension_exit_align_active = false
+	_tiller_extension_exit_step_permit = false
+	_tiller_extension_exit_bridge_active = false
+	var joint_boat := rudder_pivot.transform * tiller_extension_pivot.position
+	var side := signf(sailor.seat_side)
+	if is_zero_approx(side):
+		side = signf(tiller_extension_direction_boat().x)
+	if is_zero_approx(side):
+		side = 1.0
+	if sailor.maneuver_phase_name() == &"sit" and tiller_extension_pair_accepts_body_pose(body_capsules, side, false):
+		# A handover ends at a certified normal working pose, not only at one
+		# preferred grip sample. Ordinary steering can refine that pose afterward;
+		# an unreachable aesthetic target must not hold the completed body in EXIT.
+		_tiller_extension_blocked = false
+		_tiller_extension_exit_align_ready = true
+		_tiller_extension_handover_route_active = false
+		_tiller_extension_active_joint_limit = TILLER_EXTENSION_HARD_JOINT_ANGLE
+		_record_tiller_extension_driven_pair(TillerExtensionPairMode.NORMAL, _tiller_extension_direction_rudder, _tiller_extension_hand_distance)
+		_publish_tiller_extension_pose()
+		return
+	if pair_delta <= 0.000001 and tiller_extension_pair_accepts_body_pose(body_capsules, side, true):
+		# The body's swept commit has already spent this frame's shaft motion.
+		# Revalidate its final contact once; another target search cannot move it.
+		_tiller_extension_blocked = false
+		_publish_tiller_extension_pose()
+		return
+	var desired_vector := sailor.tiller_control_target_boat_position(sailing_command.rudder) - joint_boat
+	if desired_vector.length_squared() <= 0.000001:
+		_tiller_extension_blocked = true
+		return
+	var desired_direction := (rudder_pivot.basis.inverse() * desired_vector.normalized()).normalized()
+	var desired_distance := clampf(
+		desired_vector.length(), TILLER_EXTENSION_MIN_HAND_DISTANCE, TILLER_EXTENSION_MAX_HAND_DISTANCE
+	)
+	var normal_requested := sailor.maneuver_phase_name() == &"sit"
+	var normal_pair := false
+	var target_pair: Dictionary = {}
+	if not normal_requested:
+		var raw_pair := {"direction": desired_direction, "distance": desired_distance}
+		if tiller_extension_pair_accepts_body_pose(body_capsules, side, true, raw_pair):
+			target_pair = raw_pair
+	if normal_requested:
+		target_pair = _find_safe_normal_tiller_extension_pair(
+			joint_boat, body_capsules, side, desired_distance
+		)
+		normal_pair = not target_pair.is_empty()
+	if target_pair.is_empty():
+		target_pair = _find_safe_handover_tiller_extension_pair(
+			desired_direction, desired_distance, joint_boat, body_capsules, side,
+			TILLER_EXTENSION_MIN_HAND_DISTANCE, TILLER_EXTENSION_CENTRAL_BODY_CLEARANCE
+		)
+	if target_pair.is_empty():
+		_tiller_extension_blocked = true
+		return
+	var target_direction: Vector3 = target_pair["direction"]
+	var target_distance := float(target_pair["distance"])
+	_record_tiller_extension_driven_pair(
+		TillerExtensionPairMode.EXIT if normal_requested else TillerExtensionPairMode.HANDOVER,
+		target_direction, target_distance
+	)
+	_tiller_extension_active_joint_limit = TILLER_EXTENSION_HANDOVER_HARD_JOINT_ANGLE
+	_tiller_extension_handover_route_active = true
+	if pair_delta > 0.000001:
+		# Target selection already used these same final body capsules. Reuse the
+		# goal, not a safety certificate; step endpoint and midpoint stay strict.
+		var step_pair := preview_tiller_extension_pair_for_body_pose(body_capsules, side, true, pair_delta, 0, target_pair)
+		if (
+			not step_pair.is_empty()
+			and _tiller_extension_body_pose_pair_midpoint_is_safe(step_pair, body_capsules, side, true)
+		):
+			_tiller_extension_blocked = not commit_tiller_extension_body_pose_pair(step_pair)
+			_tiller_extension_maneuver_pair_delta = 0.0
+		else:
+			_tiller_extension_blocked = not tiller_extension_pair_accepts_body_pose(body_capsules, side, true)
+	else:
+		_tiller_extension_blocked = not tiller_extension_pair_accepts_body_pose(body_capsules, side, true)
+	var normal_ready := (
+		normal_pair
+		and not _tiller_extension_blocked
+		and _tiller_extension_direction_rudder.angle_to(target_direction) <= TILLER_EXTENSION_EXIT_COMPLETION_DIRECTION
+		and absf(_tiller_extension_hand_distance - target_distance) <= TILLER_EXTENSION_EXIT_COMPLETION_DISTANCE
+		and tiller_extension_pair_accepts_body_pose(body_capsules, side, false)
+	)
+	_tiller_extension_exit_align_ready = normal_ready
+	if normal_ready:
+		_tiller_extension_handover_route_active = false
+		_tiller_extension_active_joint_limit = TILLER_EXTENSION_HARD_JOINT_ANGLE
+		_record_tiller_extension_driven_pair(TillerExtensionPairMode.NORMAL, target_direction, target_distance)
+	if not _tiller_extension_blocked:
+		_publish_tiller_extension_pose()
+
+
 func _find_safe_normal_tiller_extension_pair(
 	joint_boat: Vector3,
 	body_capsules: Array,
 	new_side: float,
 	requested_distance: float,
 	prefer_current_pair: bool = false,
-	require_exit_target_reserve: bool = false
+	require_exit_target_reserve: bool = false,
+	remember_choice: bool = true
 ) -> Dictionary:
 	var side := signf(new_side)
 	if is_zero_approx(side):
@@ -1362,21 +2002,8 @@ func _find_safe_normal_tiller_extension_pair(
 			}
 			if prefer_current_pair:
 				return current_recovery_pair
-	var rudder_input := clampf(
-		rudder_pivot.rotation.y / maxf(MAX_RUDDER_VISUAL_ANGLE, 0.0001),
-		-1.0,
-		1.0
-	)
-	var toward_amount := clampf(-side * rudder_input, 0.0, 1.0)
-	var away_amount := clampf(side * rudder_input, 0.0, 1.0)
-	var neutral_boat := Vector3(side * 0.406, 0.608, -0.682).normalized()
-	var toward_boat := Vector3(side * 0.081, 0.629, -0.773).normalized()
-	var away_boat := Vector3(side * 0.587, 0.533, -0.609).normalized()
-	var authored_boat := neutral_boat
-	if toward_amount > 0.0:
-		authored_boat = neutral_boat.slerp(toward_boat, toward_amount).normalized()
-	elif away_amount > 0.0:
-		authored_boat = neutral_boat.slerp(away_boat, away_amount).normalized()
+	var working_contact := _normal_tiller_working_contact_boat(side)
+	var authored_boat := (working_contact - joint_boat).normalized()
 	var offsets: Array[Vector3] = [
 		Vector3.ZERO,
 		Vector3(-side * 0.015, -0.015, -0.010),
@@ -1494,7 +2121,8 @@ func _find_safe_normal_tiller_extension_pair(
 					resolved_boat,
 					candidate_distance,
 					requested_distance,
-					shoulder_boat
+					shoulder_boat,
+					working_contact
 				)
 			)
 			if score < best_score:
@@ -1562,7 +2190,7 @@ func _find_safe_normal_tiller_extension_pair(
 		)
 	):
 		selected_pair = incumbent_distance_pair
-	if not selected_pair.is_empty():
+	if remember_choice and not selected_pair.is_empty():
 		_tiller_extension_normal_target_index = int(
 			selected_pair.get("candidate_index", 0)
 		)
@@ -2002,21 +2630,24 @@ func _recover_unsafe_tiller_extension_pair(
 	body_capsules: Array,
 	side: float,
 	max_joint_angle: float,
-	is_handover: bool
+	is_handover: bool,
+	delta: float
 ) -> Dictionary:
+	var direction_step_budget := _tiller_extension_direction_step_budget(delta)
+	var distance_step_budget := _tiller_extension_distance_step_budget(delta)
 	var current_direction := _tiller_extension_direction_rudder.normalized()
 	var current_distance := _tiller_extension_hand_distance
 	var direction_error := current_direction.angle_to(target_direction_rudder)
 	var bounded_direction := target_direction_rudder.normalized()
-	if direction_error > TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE:
+	if direction_error > direction_step_budget:
 		bounded_direction = current_direction.slerp(
 			target_direction_rudder,
-			TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE / direction_error
+			direction_step_budget / direction_error
 		).normalized()
 	var bounded_distance := move_toward(
 		current_distance,
 		target_distance,
-		TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE
+		distance_step_budget
 	)
 	var distance_has_work := absf(target_distance - current_distance) > 0.000001
 	var direction_has_work := direction_error > 0.000001
@@ -2199,7 +2830,7 @@ func _recover_unsafe_tiller_extension_pair(
 	# The target chord can initially deepen a folded wrist even though a nearby
 	# tangent step would go around the same capsule. Probe a deterministic local
 	# neighbourhood only after that chord has no admissible recovery at all. Every
-	# candidate remains inside the same 2.5-degree/12-mm visible-pose budget; this
+	# candidate remains inside the same elapsed-time visible-pose budget; this
 	# is a bounded escape step, not a second global route planner.
 	var current_boat := (
 		rudder_pivot.basis * current_direction
@@ -2220,7 +2851,7 @@ func _recover_unsafe_tiller_extension_pair(
 		tangent_side_boat,
 		-tangent_side_boat,
 	]
-	var escape_angle := TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE
+	var escape_angle := direction_step_budget
 	for tangent_boat in local_tangents_boat:
 		var candidate_boat := (
 			current_boat * cos(escape_angle)
@@ -2261,12 +2892,12 @@ func _recover_unsafe_tiller_extension_pair(
 	var escape_distances: Array[float] = [
 		current_distance,
 		clampf(
-			current_distance - TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE,
+			current_distance - distance_step_budget,
 			TILLER_EXTENSION_MIN_HAND_DISTANCE,
 			TILLER_EXTENSION_MAX_HAND_DISTANCE
 		),
 		clampf(
-			current_distance + TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE,
+			current_distance + distance_step_budget,
 			TILLER_EXTENSION_MIN_HAND_DISTANCE,
 			TILLER_EXTENSION_MAX_HAND_DISTANCE
 		),
@@ -2284,7 +2915,7 @@ func _recover_unsafe_tiller_extension_pair(
 	for candidate_direction in escape_directions:
 		if (
 			current_direction.angle_to(candidate_direction)
-			> TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE + 0.00001
+			> direction_step_budget + 0.00001
 		):
 			continue
 		var candidate_boat := (
@@ -2318,7 +2949,7 @@ func _recover_unsafe_tiller_extension_pair(
 		for candidate_distance in escape_distances:
 			if (
 				absf(candidate_distance - current_distance)
-				> TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE + 0.00001
+				> distance_step_budget + 0.00001
 			):
 				continue
 			if (
@@ -2422,6 +3053,8 @@ func _advance_tiller_extension_pair(
 	max_joint_angle: float,
 	immediate: bool
 ) -> bool:
+	var direction_step_budget := _tiller_extension_direction_step_budget(delta)
+	var distance_step_budget := _tiller_extension_distance_step_budget(delta)
 	if (
 		immediate
 		or not _tiller_extension_initialized
@@ -2459,7 +3092,8 @@ func _advance_tiller_extension_pair(
 			body_capsules,
 			side,
 			max_joint_angle,
-			false
+			false,
+			delta
 		)
 		if normal_recovery.is_empty():
 			_tiller_extension_angular_velocity = Vector3.ZERO
@@ -2489,7 +3123,8 @@ func _advance_tiller_extension_pair(
 			body_capsules,
 			side,
 			max_joint_angle,
-			true
+			true,
+			delta
 		)
 		if handover_recovery.is_empty():
 			_tiller_extension_angular_velocity = Vector3.ZERO
@@ -2594,13 +3229,13 @@ func _advance_tiller_extension_pair(
 			if resolve_direction_angle > 0.000001:
 				resolve_pair_fraction = minf(
 					resolve_pair_fraction,
-					TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE
+					direction_step_budget
 					/ resolve_direction_angle
 				)
 			if resolve_distance_delta > 0.000001:
 				resolve_pair_fraction = minf(
 					resolve_pair_fraction,
-					TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE
+					distance_step_budget
 					/ resolve_distance_delta
 				)
 			resolve_pair_fraction = clampf(resolve_pair_fraction, 0.0, 1.0)
@@ -2616,17 +3251,17 @@ func _advance_tiller_extension_pair(
 		else:
 			if (
 				resolve_direction_angle
-				> TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE
+				> direction_step_budget
 			):
 				proposed_direction = resolve_start_direction.slerp(
 					proposed_direction,
-					TILLER_EXTENSION_MAX_DIRECTION_STEP_PER_RESOLVE
+					direction_step_budget
 					/ resolve_direction_angle
 				).normalized()
 			proposed_distance = clampf(
 				proposed_distance,
-				resolve_start_distance - TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE,
-				resolve_start_distance + TILLER_EXTENSION_MAX_DISTANCE_STEP_PER_RESOLVE
+				resolve_start_distance - distance_step_budget,
+				resolve_start_distance + distance_step_budget
 			)
 		var accepted_pair := _furthest_safe_tiller_extension_pair_step(
 			current_direction,
@@ -2721,6 +3356,14 @@ func _advance_tiller_extension_pair(
 	return true
 
 
+func _tiller_extension_direction_step_budget(delta: float) -> float:
+	return TILLER_EXTENSION_VISIBLE_DIRECTION_SPEED * clampf(delta, 0.0, 0.10)
+
+
+func _tiller_extension_distance_step_budget(delta: float) -> float:
+	return TILLER_EXTENSION_VISIBLE_DISTANCE_SPEED * clampf(delta, 0.0, 0.10)
+
+
 func _record_tiller_extension_driven_pair(
 	mode: TillerExtensionPairMode,
 	target_direction_rudder: Vector3,
@@ -2755,6 +3398,11 @@ func _rebase_tiller_extension_state_to_current_rudder_basis(
 		_tiller_extension_last_rudder_basis = current_basis
 		_tiller_extension_last_joint_boat = current_joint_boat
 		_tiller_extension_rudder_basis_initialized = true
+		return
+	if (
+		current_basis == _tiller_extension_last_rudder_basis
+		and current_joint_boat == _tiller_extension_last_joint_boat
+	):
 		return
 	var previous_basis := _tiller_extension_last_rudder_basis
 	var previous_to_current := (
@@ -3078,7 +3726,8 @@ func _tiller_extension_pair_is_safe(
 func _tiller_extension_candidate_wrist_guard(
 	direction_rudder: Vector3,
 	hand_distance: float,
-	joint_boat: Vector3
+	joint_boat: Vector3,
+	validate_arm: bool = false
 ) -> Dictionary:
 	if not is_instance_valid(sailor):
 		return {"safe": false, "violation_m": INF}
@@ -3088,7 +3737,8 @@ func _tiller_extension_candidate_wrist_guard(
 	var contact_boat := joint_boat + direction_boat * hand_distance
 	return sailor.preview_tiller_extension_pair_wrist_guard(
 		contact_boat,
-		direction_boat
+		direction_boat,
+		validate_arm
 	)
 
 
@@ -3362,7 +4012,8 @@ func _tiller_extension_hand_distance_score(
 	direction_boat: Vector3,
 	candidate_distance: float,
 	authored_distance: float,
-	tiller_shoulder_boat: Vector3
+	tiller_shoulder_boat: Vector3,
+	working_target_boat: Vector3 = Vector3.INF
 ) -> float:
 	var continuity_error := 0.0
 	if _tiller_extension_hand_distance_initialized:
@@ -3387,6 +4038,8 @@ func _tiller_extension_hand_distance_score(
 		TILLER_EXTENSION_WORKING_CONTACT_HEIGHT,
 		TILLER_EXTENSION_WORKING_CONTACT_AFT
 	)
+	if working_target_boat.is_finite():
+		working_contact = working_target_boat
 	score += contact.distance_to(working_contact) * (
 		TILLER_EXTENSION_WORKING_CONTACT_WEIGHT
 	)
@@ -3406,6 +4059,38 @@ func _tiller_extension_hand_distance_score(
 			) * TILLER_EXTENSION_COMFORT_TARGET_WEIGHT
 		)
 	return score
+
+
+func _normal_tiller_working_contact_boat(side: float) -> Vector3:
+	# Follow the already-smoothed physical rudder. Deriving the shaft direction
+	# from this same moving contact avoids cancelling the joint's translation
+	# with an independently authored direction while the hand stays nearly still.
+	var rudder_input := clampf(
+		rudder_pivot.rotation.y / maxf(MAX_RUDDER_VISUAL_ANGLE, 0.0001), -1.0, 1.0
+	)
+	return _normal_tiller_working_contact_for_input(side, rudder_input)
+
+
+func _normal_tiller_working_contact_for_input(side: float, rudder_input: float) -> Vector3:
+	# Lift leads the inward pull so the full shaft clears the opposite shoulder
+	# before the contact approaches the torso. Both arcs end with zero slope.
+	rudder_input = clampf(rudder_input, -1.0, 1.0)
+	var away_amount := signf(side) * rudder_input
+	var pull_amount := maxf(away_amount, 0.0)
+	var pull_arc := smoothstep(0.0, 1.0, pull_amount)
+	var pull_lift := sin(pull_amount * PI * 0.5) * smoothstep(
+		0.0, TILLER_EXTENSION_STEERING_PULL_LIFT_ENTRY, pull_amount
+	)
+	return Vector3(
+		signf(side) * (TILLER_EXTENSION_WORKING_CONTACT_LATERAL
+			+ away_amount * TILLER_EXTENSION_STEERING_CONTACT_STROKE),
+		TILLER_EXTENSION_WORKING_CONTACT_HEIGHT
+			+ TILLER_EXTENSION_STEERING_NEUTRAL_LIFT_RESERVE * (1.0 - pull_lift)
+			+ pull_lift * TILLER_EXTENSION_STEERING_PULL_LIFT,
+		# Pull around the chest-front lane: moving only toward the torso in X
+		# leaves the extra shaft beyond the palm aimed through the upper body.
+		TILLER_EXTENSION_WORKING_CONTACT_AFT - pull_arc * TILLER_EXTENSION_STEERING_PULL_FORWARD_ARC
+	)
 
 
 func _retain_clipped_tiller_extension_velocity(
@@ -3733,40 +4418,9 @@ func _find_safe_tiller_extension_direction(
 			body_capsules,
 			max_joint_angle
 		)
-	# Keep ordinary steering in one continuous, forward working component. These
-	# measured endpoints retain the palm on the seated side while the connected
-	# tiller joint traverses its full +/-12 degree visual range. The fixed 1.10 m
-	# shaft clears the anatomical capsules throughout each spherical interpolation.
-	# Follow the physical, already-smoothed tiller angle. Using the raw key axis
-	# changed the parent joint and child target at two different rates and amplified
-	# a direction reversal into an arm-IK branch pop.
-	var rudder_input := clampf(
-		rudder_pivot.rotation.y / maxf(MAX_RUDDER_VISUAL_ANGLE, 0.0001),
-		-1.0,
-		1.0
-	)
-	var toward_amount := clampf(-side * rudder_input, 0.0, 1.0)
-	var away_amount := clampf(side * rudder_input, 0.0, 1.0)
-	var neutral_boat := Vector3(
-		side * 0.406,
-		0.608,
-		-0.682
-	).normalized()
-	var toward_boat := Vector3(
-		side * 0.081,
-		0.629,
-		-0.773
-	).normalized()
-	var away_boat := Vector3(
-		side * 0.587,
-		0.533,
-		-0.609
-	).normalized()
-	var authored_boat := neutral_boat
-	if toward_amount > 0.0:
-		authored_boat = neutral_boat.slerp(toward_boat, toward_amount).normalized()
-	elif away_amount > 0.0:
-		authored_boat = neutral_boat.slerp(away_boat, away_amount).normalized()
+	# Normal contact selection and direction recovery share one steering stroke.
+	# The unchanged guards below certify its contact, shaft and joint corridor.
+	var authored_boat := (_normal_tiller_working_contact_boat(side) - joint_boat).normalized()
 	var authored_rudder := (
 		rudder_pivot.basis.inverse() * authored_boat
 	).normalized()
@@ -3848,6 +4502,25 @@ func _find_safe_handover_tiller_extension_pair(
 	minimum_distance: float = TILLER_EXTENSION_MIN_HAND_DISTANCE,
 	minimum_clearance: float = 0.0
 ) -> Dictionary:
+	var started_us := Time.get_ticks_usec()
+	var result := _find_safe_handover_tiller_extension_pair_impl(
+		desired_rudder, requested_distance, joint_boat, body_capsules,
+		route_side, minimum_distance, minimum_clearance
+	)
+	maneuver_profile["search_us"] = int(maneuver_profile["search_us"]) + Time.get_ticks_usec() - started_us
+	maneuver_profile["search_calls"] = int(maneuver_profile["search_calls"]) + 1
+	return result
+
+
+func _find_safe_handover_tiller_extension_pair_impl(
+	desired_rudder: Vector3,
+	requested_distance: float,
+	joint_boat: Vector3,
+	body_capsules: Array,
+	route_side: float,
+	minimum_distance: float = TILLER_EXTENSION_MIN_HAND_DISTANCE,
+	minimum_clearance: float = 0.0
+) -> Dictionary:
 	# Direction and foam contact are one ergonomic state. Choosing a shaft ray
 	# first and freezing the distance through the centre of a tack left one hand
 	# at 11 cm of wrist reach and the other beyond the 52.8 cm arm length even
@@ -3912,8 +4585,7 @@ func _find_safe_handover_tiller_extension_pair(
 			TILLER_EXTENSION_MAX_HAND_DISTANCE,
 			ratio
 		))
-	var best_pair: Dictionary = {}
-	var best_score := INF
+	var candidates: Array[Dictionary] = []
 	var minimum_candidate_distance := clampf(
 		minimum_distance,
 		TILLER_EXTENSION_MIN_HAND_DISTANCE,
@@ -3936,23 +4608,6 @@ func _find_safe_handover_tiller_extension_pair(
 		for candidate_distance in distances:
 			if candidate_distance < minimum_candidate_distance - 0.00001:
 				continue
-			if not _tiller_extension_pair_is_safe(
-				candidate_direction,
-				candidate_distance,
-				joint_boat,
-				body_capsules,
-				true,
-				TILLER_EXTENSION_HANDOVER_HARD_JOINT_ANGLE,
-				side
-			):
-				continue
-			if _tiller_extension_pair_clearance_margin(
-				candidate_direction,
-				candidate_distance,
-				joint_boat,
-				body_capsules
-			) < minimum_clearance:
-				continue
 			var score := (
 				candidate_direction.angle_to(desired_rudder) * 2.0
 				+ candidate_direction.angle_to(
@@ -3963,13 +4618,43 @@ func _find_safe_handover_tiller_extension_pair(
 					candidate_distance - _tiller_extension_hand_distance
 				) * 0.08
 			)
-			if score < best_score:
-				best_score = score
-				best_pair = {
-					"direction": candidate_direction,
-					"distance": candidate_distance,
-				}
-	return best_pair
+			if not score < INF:
+				continue
+			candidates.append({
+				"direction": candidate_direction,
+				"distance": candidate_distance,
+				"score": score,
+				"order": candidates.size(),
+			})
+	# Direction-only rejection above remains unchanged. Score ordering avoids
+	# repeating contact, wrist and clearance checks for every worse grip sample.
+	candidates.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		if float(first["score"]) == float(second["score"]):
+			return int(first["order"]) < int(second["order"])
+		return float(first["score"]) < float(second["score"])
+	)
+	for candidate in candidates:
+		var candidate_direction: Vector3 = candidate["direction"]
+		var candidate_distance := float(candidate["distance"])
+		if not _tiller_extension_pair_is_safe(
+			candidate_direction,
+			candidate_distance,
+			joint_boat,
+			body_capsules,
+			true,
+			TILLER_EXTENSION_HANDOVER_HARD_JOINT_ANGLE,
+			side
+		):
+			continue
+		if _tiller_extension_pair_clearance_margin(
+			candidate_direction,
+			candidate_distance,
+			joint_boat,
+			body_capsules
+		) < minimum_clearance:
+			continue
+		return {"direction": candidate_direction, "distance": candidate_distance}
+	return {}
 
 
 func _normal_extension_direction_preserves_side(
@@ -4060,18 +4745,12 @@ func _handover_direction_preserves_route(
 		and _normal_extension_direction_preserves_side(direction_boat, self_side)
 	):
 		return true
-	# The handover is a connected upper/aft hemisphere, not two disjoint lateral
-	# corridors. Requiring x*side > .45 made the target invalid at x=0 and forced
-	# an impossible jump from the old side to the new one. Hard-cone and full-shaft
-	# capsule checks below remain the authority for real body clearance.
-	if direction_boat.y <= 0.45:
-		return false
-	# The ergonomic handover passes close to the centreline at chest height. Its
-	# shaft still points forward from the aft universal joint, so a -0.35 cutoff
-	# disconnected the exact x=0 bridge and forced a fallback toward the old,
-	# unreachable lateral target. The hard cone and full-shaft capsule test remain
-	# authoritative for collision safety.
-	return not require_aft or direction_boat.z > -0.72
+	# The sailor turns toward the stern while crossing in front of the controls.
+	# A low centreline handover therefore uses the same upward, forward shaft
+	# hemisphere as ordinary steering. The old arbitrary z > -0.72 cut forced a
+	# valid chest-height centre target upward even when the whole shaft was clear.
+	# Joint cone, complete shaft capsules and wrist reach still certify every pair.
+	return direction_boat.y >= 0.32 and (not require_aft or direction_boat.z <= 0.15)
 
 
 func _extension_direction_is_safe(
