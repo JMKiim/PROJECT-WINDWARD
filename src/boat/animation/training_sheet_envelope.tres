@@ -1,0 +1,17 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://src/boat/animation/training_sheet_envelope.gd" id="1_pe8bi"]
+
+[resource]
+script = ExtResource("1_pe8bi")
+minimum_rig_metres = 2.4340630580734577
+minimum_cockpit_metres = 0.9811965696513653
+maximum_held_metres = 0.8811965696513653
+fixed_end_metres = 0.3158828706946224
+free_end_metres = 0.4035910710808821
+source_signatures = {
+"res://src/boat/animation/sheet_remote_feed_profile.tres": "ae659cf1be24b7ac84a7afbe8062d7b79a5d3cc67e8eae46aea00d22b605e531",
+"res://src/boat/ilca_training_rig.gd": "f015b5c2356a0cc0bd5cddd10b85c7dcc995aa23ce354907fac8ddb990f6678d",
+"res://src/boat/mainsheet_stopper.gd": "7a6819bf99510146bc64c74a98792cf39aa3e71495962daa49efc41a1c2c1d91",
+"res://src/boat/training_sheave_block.gd": "9474409994a91fdf1d3eddf245aa0dcc3668a94348ccafe6c53c5101b9a21c73"
+}

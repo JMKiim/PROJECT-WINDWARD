@@ -55,7 +55,7 @@ cull_mode = 2
 [sub_resource type="CylinderMesh" id="LowerMastMesh"]
 top_radius = 0.047
 bottom_radius = 0.057
-height = 2.865
+height = 3.185
 radial_segments = 40
 rings = 16
 
@@ -139,21 +139,21 @@ shape = SubResource("HullCollision")
 script = ExtResource("2_hull")
 
 [node name="Daggerboard" type="MeshInstance3D" parent="."]
-position = Vector3(0, -0.26, -0.27)
+position = Vector3(0, -0.135, -0.155)
 script = ExtResource("4_foil")
-span = 0.70
+span = 0.95
 root_chord = 0.341
 tip_chord = 0.135
 maximum_thickness = 0.033
 aft_sweep = 0.0
 
 [node name="DaggerboardHead" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.18, -0.27)
+position = Vector3(0, 0.435, -0.155)
 script = ExtResource("8_hardware")
 part_kind = 5
 
 [node name="DaggerboardHandle" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.255, -0.27)
+position = Vector3(0, 0.510, -0.155)
 script = ExtResource("8_hardware")
 part_kind = 6
 
@@ -214,9 +214,11 @@ position = Vector3(0, 0, -0.60)
 position = Vector3(0, 0.075, 0.82)
 script = ExtResource("8_hardware")
 part_kind = 21
+forward_tail_center = Vector3(0, 0.170, -0.613)
+forward_tail_length = 0.060
 
 [node name="HikingStrapForwardPlate" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.080, 0.275)
+position = Vector3(0, 0.255, 0.207)
 script = ExtResource("8_hardware")
 part_kind = 22
 
@@ -265,17 +267,16 @@ script = ExtResource("8_hardware")
 part_kind = 3
 
 [node name="SelfBailer" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.043, 1.04)
 script = ExtResource("8_hardware")
 part_kind = 9
 
 [node name="RatchetBlock" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.105, 0.24)
+position = Vector3(0, 0.290, 0.14)
 script = ExtResource("8_hardware")
 part_kind = 0
 
 [node name="DaggerboardCase" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.058, -0.27)
+position = Vector3(0, 0.058, -0.155)
 script = ExtResource("8_hardware")
 part_kind = 4
 
@@ -304,27 +305,25 @@ script = ExtResource("8_hardware")
 part_kind = 19
 
 [node name="PortHikingStrapEye" type="MeshInstance3D" parent="."]
-position = Vector3(-0.18, 0.15, 1.405)
-rotation_degrees = Vector3(-90, 0, 0)
+position = Vector3(-0.18, 0.150685, 1.369578)
+rotation_degrees = Vector3(-78.73, 0, 0)
 script = ExtResource("8_hardware")
 part_kind = 10
 
 [node name="StarboardHikingStrapEye" type="MeshInstance3D" parent="."]
-position = Vector3(0.18, 0.15, 1.405)
-rotation_degrees = Vector3(-90, 0, 0)
+position = Vector3(0.18, 0.150685, 1.369586)
+rotation_degrees = Vector3(-78.73, 0, 0)
 script = ExtResource("8_hardware")
 part_kind = 10
 
 [node name="WorldSailingPlaque" type="MeshInstance3D" parent="."]
-position = Vector3(-0.075, 0.205, 1.418)
-rotation_degrees = Vector3(0, 180, 0)
+position = Vector3(-0.075, 0.205193, 1.382998)
+rotation_degrees = Vector3(-11.13, 180, 0)
 mesh = SubResource("WorldSailingPlaqueMesh")
 
 [node name="CockpitDrainBung" type="MeshInstance3D" parent="."]
-position = Vector3(0.075, 0.095, 1.405)
-rotation_degrees = Vector3(90, 0, 0)
-mesh = SubResource("CockpitDrainMesh")
-material_override = SubResource("DeckHardwareMaterial")
+script = ExtResource("8_hardware")
+part_kind = 23
 
 [node name="PortHullMark" type="Sprite3D" parent="."]
 position = Vector3(-0.569, 0.222, 1.72)
@@ -343,12 +342,12 @@ double_sided = false
 cast_shadow = 0
 
 [node name="LowerMast" type="MeshInstance3D" parent="."]
-position = Vector3(0, 1.7725, -0.81)
+position = Vector3(0, 1.6125, -0.81)
 mesh = SubResource("LowerMastMesh")
 material_override = SubResource("MastAluminumMaterial")
 
 [node name="LowerMastBasePlug" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.350, -0.81)
+position = Vector3(0, 0.0275, -0.81)
 mesh = SubResource("MastPlugMesh")
 material_override = SubResource("BlackPlasticMaterial")
 

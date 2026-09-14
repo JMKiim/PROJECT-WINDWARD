@@ -19,12 +19,15 @@ extends Resource
 @export var torso_pitch_degrees := PackedFloat32Array([6.0, 3.0, 0.0, -1.5, -3.0])
 @export var grip_distance := 0.72
 @export var torso_yaw_degrees := PackedFloat32Array([0, 0, 0, 0, 0])
+@export var seated_work_offset := Vector3.ZERO
+@export var seated_pole_offset := Vector3.ZERO
 
 
-func palm_at(amount: float) -> Vector3:
+func palm_at(amount: float, seated_weight := 1.0) -> Vector3:
 	var coordinate := (clampf(amount, -1.0, 1.0) + 1.0) * 2.0
 	var index := mini(int(coordinate), 3)
 	var guide := palm_keys[index].lerp(palm_keys[index + 1], coordinate - float(index))
+	guide += seated_work_offset * clampf(seated_weight, 0.0, 1.0)
 	var joint := Vector3(0, 0, 2.171) + Basis(Vector3.UP, clampf(amount, -1.0, 1.0) * deg_to_rad(12.0)) * Vector3(0, 0.352952, -0.979058)
 	# This stroke never releases the extension: preserve its material grip point.
 	return joint + (guide - joint).normalized() * grip_distance
@@ -36,8 +39,8 @@ func pitch_at(amount: float) -> float:
 	return deg_to_rad(lerpf(torso_pitch_degrees[index], torso_pitch_degrees[index + 1], coordinate - float(index)))
 
 
-func elbow_at(amount: float) -> Vector3:
-	return tiller_elbow_push_guide.lerp(tiller_elbow_guide, (clampf(amount, -1.0, 1.0) + 1.0) * 0.5)
+func elbow_at(amount: float, seated_weight := 1.0) -> Vector3:
+	return tiller_elbow_push_guide.lerp(tiller_elbow_guide, (clampf(amount, -1.0, 1.0) + 1.0) * 0.5) + seated_pole_offset * clampf(seated_weight, 0.0, 1.0)
 
 
 func yaw_at(amount: float) -> float:

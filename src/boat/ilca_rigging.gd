@@ -184,11 +184,8 @@ func mainsheet_route_points() -> PackedVector3Array:
 	var deck_ratchet := boat.get_node("RatchetBlock") as IlcaHardwarePart
 	var aft_boom_becket := _hardware_anchor_in_rigging(aft_block, &"becket")
 	var aft_boom_block := _hardware_anchor_in_rigging(aft_block, &"sheave")
-	# Two passes through the aft block use small lateral offsets expressed in
-	# this rigging node's coordinate space, never a mixed global basis.
-	var aft_axis := (global_basis.inverse() * aft_block.global_basis.x).normalized()
-	aft_boom_becket += aft_axis * 0.020
-	aft_boom_block -= aft_axis * 0.020
+	# Becket and sheave already have distinct vertical anchors. Both must
+	# remain in the groove plane; lateral offsets put rope outside the cheeks.
 	return PackedVector3Array([
 		aft_boom_becket,
 		_hardware_anchor_in_rigging(traveller, &"mainsheet_sheave"),

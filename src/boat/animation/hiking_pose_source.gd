@@ -20,8 +20,12 @@ func grip_at(hike: float) -> float:
 func palm_at(amount: float, hike: float) -> Vector3:
 	var h := clampf(hike, 0, 1)
 	var joint := Vector3(0, 0, 2.171) + Basis(Vector3.UP, clampf(amount, -1, 1) * deg_to_rad(12)) * Vector3(0, 0.352952, -0.979058)
-	var guide: Vector3 = SEATED.palm_at(amount) + (palm_guide_offset + palm_steering_offset * clampf(amount, -1, 1)) * h
+	var guide: Vector3 = SEATED.palm_at(amount, seated_work_weight(h)) + (palm_guide_offset + palm_steering_offset * clampf(amount, -1, 1)) * h
 	return joint + (guide - joint).normalized() * grip_at(h)
+
+func seated_work_weight(hike: float) -> float:
+	var seated := 1.0 - clampf(hike, 0.0, 1.0)
+	return seated * seated
 
 func pitch_at(amount: float, hike: float) -> float:
 	var h := clampf(hike, 0, 1)

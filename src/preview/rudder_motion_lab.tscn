@@ -4,3 +4,7 @@
 
 [node name="RudderMotionLab" type="Node3D"]
 script = ExtResource("1")
+complete_mainsheet_enabled = true
+irregular_floor_enabled = true
+hiking_sheet_controls_enabled = false
+extension_tube_metres = 1.07

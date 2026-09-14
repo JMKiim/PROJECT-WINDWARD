@@ -7,6 +7,8 @@ const LAYOUT := preload("res://src/boat/animation/rudder_layer_layout.gd")
 const GRIP := preload("res://src/boat/animation/authored_grip_profile.gd")
 const HIKE := preload("res://src/boat/animation/hiking_port_source.tres")
 const SHEET_STUDY := preload("res://src/boat/animation/sheet_stroke_player.gd")
+const SHEET_CONTROL := preload("res://src/boat/animation/sheet_control_player.gd")
+const POSE_MIRROR := preload("res://src/boat/animation/authored_pose_mirror.gd")
 const BODY_SCALE := 1.75 / 1.819586
 const INSPECTION_BODY := preload("res://src/boat/animation/rudder_inspection_body.gdshader")
 
@@ -23,6 +25,18 @@ const GRIP_SECONDS := 0.18
 const HIKE_RATE := 0.35
 var body_material: ShaderMaterial
 var sheet_study: Node
+var sheet_control: Node
+var pose_mirror := POSE_MIRROR.new()
+var extension_span := 1.10
+var hiking_sheet_grid: RefCounted
+
+func prepare_hiking_sheet_controls(highest_level := 8) -> bool:
+	var bank := preload("res://src/boat/animation/hiking_sheet_bank.gd")
+	if extension_span<bank.EXTENSION_SPAN-.000001: return false
+	var grid := preload("res://src/boat/animation/authored_sheet_grid.gd").new()
+	if not grid.setup(self,highest_level): return false
+	hiking_sheet_grid = grid
+	return true
 
 
 func _ready() -> void:
@@ -36,6 +50,7 @@ func _ready() -> void:
 	_disable_modifiers(rig)
 	pose.add_child(rig)
 	skeleton = rig.get_node("Armature/GeneralSkeleton")
+	pose_mirror.setup(skeleton)
 	(rig.get_node("AnimationPlayer") as AnimationPlayer).active = false
 	for layer in LAYOUT.LAYERS:
 		var player := AnimationPlayer.new()
@@ -75,6 +90,9 @@ func _ready() -> void:
 	sheet_study = SHEET_STUDY.new()
 	add_child(sheet_study)
 	sheet_study.setup(self)
+	sheet_control = SHEET_CONTROL.new()
+	add_child(sheet_control)
+	sheet_control.setup(self)
 	set_amount(0.0)
 
 
@@ -97,6 +115,8 @@ func set_amount(value: float) -> void:
 		tree.advance(0.0)
 	if sheet_study != null and sheet_study.enabled:
 		sheet_study.sample()
+	elif sheet_control != null:
+		sheet_control.sample()
 	# A guided grip loosens slightly before sliding, and closes before HOLD.
 	# Reapply from the sampled clip, never accumulate rotations. Thumb stays on.
 	if grip_loosen > 0.0:
@@ -171,6 +191,16 @@ func set_side(value: int) -> void:
 	if value not in [LAYOUT.PORT, LAYOUT.STARBOARD] or value == seat_side:
 		return
 	seat_side = value
+	# This API is an inspection cut, not the continuous crossing controller.
+	# A rope from the old seat is not valid history for the new static pose.
+	if sheet_study!=null:
+		sheet_study.manual_cache.clear()
+		sheet_study.manual_cache_key.clear()
+		sheet_study.manual_cache_revision = -1
+	if sheet_control!=null and sheet_control.regrip!=null:
+		sheet_control.regrip.wrap_direction.clear()
+		sheet_control.regrip.wrap_sweep.clear()
+		sheet_control.regrip.contact_angles.clear()
 	set_hike(hike)
 	for player in players.values():
 		player.play("rudder/" + LAYOUT.side_name(seat_side))
@@ -195,6 +225,15 @@ func from_port(point: Vector3) -> Vector3:
 
 func bone_pose_boat(name: String) -> Transform3D:
 	return global_transform.affine_inverse() * skeleton.global_transform * skeleton.get_bone_global_pose(skeleton.find_bone(name))
+
+
+func role_bone(port_name: String) -> String:
+	return port_name if seat_side==-1 else LAYOUT.opposite(port_name)
+
+
+func role_pose_boat(port_name: String) -> Transform3D:
+	# Express measured port-hand local contact data in the active hand.
+	return bone_pose_boat(role_bone(port_name))*pose_mirror.source_frame(port_name,seat_side)
 
 
 func palm_boat(prefix: String = "") -> Vector3:
