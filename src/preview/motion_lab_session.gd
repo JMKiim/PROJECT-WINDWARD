@@ -30,11 +30,11 @@ func select_system(value: int) -> void:
 	selected_system = value
 	notice = ""
 
-func input_sheet_wheel(notches: float) -> void:
+func input_sheet_wheel(notches: float, coarse := false) -> void:
 	if not is_finite(notches) or is_zero_approx(notches): return
 	notice = support_reason()
 	if not notice.is_empty(): return
-	var accepted := wheel_pull.request_pull(notches)
+	var accepted := wheel_pull.request_wheel(notches,coarse)
 	if is_zero_approx(accepted):
 		if notches > 0 and wheel_pull.metres >= wheel_pull.maximum_metres-.000001:
 			notice = "Maximum trim reached; wheel up eases immediately."
@@ -153,6 +153,7 @@ func snapshot() -> Dictionary:
 		"sheet_phase":STROKE.phase(actor.sheet_study.time) if reference_fixture else wheel_pull.state,
 		"wheel_pull_metres":wheel_pull.metres, "wheel_pull_target_metres":wheel_pull.target_metres,
 		"wheel_pull_rate":wheel_pull.rate, "wheel_pull_limit_metres":wheel_pull.maximum_metres,
+		"wheel_trim_gain":wheel_pull.wheel_gain, "wheel_cadence_rate":wheel_pull.cadence_rate,
 		"wheel_pull_minimum_metres":wheel_pull.minimum_metres,
 		"hand_stroke_metres":PULL_INPUT.STROKE_METRES, "regrip_required":wheel_pull.regrip_required,
 		"sheet_nominal_total_metres":PULL_INPUT.LENGTH_BUDGET.DEFAULT_TOTAL_METRES,

@@ -3,7 +3,11 @@ extends RefCounted
 ## Requested trim and hand travel are independent. No unrequested feed on return.
 const LENGTH_BUDGET := preload("res://src/boat/animation/mainsheet_length_budget.gd")
 const REPEAT_MOTION := preload("res://src/boat/animation/sheet_repeat_motion.gd")
+const RELAY_MOTION := preload("res://src/boat/animation/sheet_relay_motion.gd")
+const RELAY_PROFILE := preload("res://src/boat/animation/sheet_relay_profile.gd")
+const WHEEL_GESTURE := preload("res://src/boat/animation/sheet_wheel_gesture.gd")
 const METRES_PER_NOTCH := 0.020
+const COARSE_METRES_PER_NOTCH := 0.160
 const STROKE_METRES := 0.160
 # The legacy inspection window is not the length of the complete mainsheet.
 const REACH_METRES := STROKE_METRES
@@ -26,9 +30,12 @@ var initial_metres := 0.0
 var regrip_required := false
 var length_budget: RefCounted
 var motion: RefCounted
+var wheel_gesture := WHEEL_GESTURE.new()
+var wheel_gesture_enabled := false
+var wheel_gain := 1.0
 
 func bind_motion_profile(profile: Resource) -> bool:
-	var candidate := REPEAT_MOTION.new()
+	var candidate: RefCounted = RELAY_MOTION.new() if profile is RELAY_PROFILE else REPEAT_MOTION.new()
 	if not candidate.configure(profile): return false
 	motion = candidate
 	return true
@@ -69,13 +76,35 @@ func complete_regrip(new_work: float) -> bool:
 	regrip_required = false
 	return true
 
-func request_pull(notches: float) -> float:
+func request_pull(notches: float, coarse := false) -> float:
 	if not active or not is_finite(notches) or is_zero_approx(notches): return 0.0
+	wheel_gesture_enabled = false
+	wheel_gesture.reset()
+	wheel_gain = COARSE_METRES_PER_NOTCH/METRES_PER_NOTCH if coarse else 1.0
 	_refresh_bounds()
-	var requested := clampf(notches, -8.0, 8.0) * METRES_PER_NOTCH
+	var requested := clampf(notches, -8.0, 8.0) * (COARSE_METRES_PER_NOTCH if coarse else METRES_PER_NOTCH)
 	rate = clampf(absf(requested) / clampf(since_input, 0.008, 0.25), MIN_RATE, MAX_RATE)
 	cadence_rate = rate
 	since_input = 0.0
+	return _queue_distance(requested)
+
+func request_wheel(notches: float, coarse := false) -> float:
+	if not active or not is_finite(notches) or is_zero_approx(notches): return 0.0
+	# Keep the explicit fixed-distance inspection shortcut unchanged. The
+	# ordinary wheel does not require that modifier to reach its fast clock.
+	if coarse: return request_pull(notches,true)
+	_refresh_bounds()
+	var detents := clampf(notches,-8.0,8.0)
+	wheel_gesture_enabled = true
+	# Measure physical rotation independently of trim gain and Shift. A
+	# direction change resets the old gesture before its first fine notch.
+	wheel_gesture.push(detents*METRES_PER_NOTCH)
+	wheel_gain = wheel_gesture.trim_gain()
+	var requested := detents*METRES_PER_NOTCH*wheel_gain
+	since_input = 0.0
+	return _queue_distance(requested)
+
+func _queue_distance(requested: float) -> float:
 	# A reversal supersedes pending opposite travel, not the applied setting.
 	if (target_metres - metres) * requested < 0.0: target_metres = metres
 	var previous := target_metres
@@ -95,9 +124,11 @@ func advance(delta: float, steering: float = 0.0) -> void:
 		if not is_finite(steering): return
 		var remaining := minf(delta,.1)
 		since_input = minf(10.0,since_input+maxf(0,delta-remaining))
+		if wheel_gesture_enabled: wheel_gesture.advance(maxf(0,delta-remaining))
 		var total_feed := 0.0
 		while remaining>.0000001:
 			var step := minf(remaining,.005)
+			_advance_wheel(step)
 			motion.advance(self,step,steering)
 			total_feed += motion.last_feed
 			remaining -= step
@@ -107,6 +138,7 @@ func advance(delta: float, steering: float = 0.0) -> void:
 		if absf(total_feed)>.0000001 and state in ["HANDOVER","HANDOVER HOLD","HANDOVER RETURN","RETURN","REST"]:
 			state = "HAUL / HANDOVER" if total_feed>0 else "EASE"
 		return
+	_advance_wheel(delta)
 	var previous := metres
 	var requested := move_toward(metres, target_metres, rate * delta) - metres
 	var permitted := clampf(requested, -work * 2.0 * STROKE_METRES, (1.0-work) * 2.0 * STROKE_METRES)
@@ -132,13 +164,24 @@ func advance(delta: float, steering: float = 0.0) -> void:
 		state = "HOLD"
 	slip = move_toward(slip, 1.0 if state in ["EASE", "RETURN"] else 0.0, delta * 8.0)
 
+func _advance_wheel(delta: float) -> void:
+	if not wheel_gesture_enabled: return
+	wheel_gesture.advance(delta)
+	rate = clampf(wheel_gesture.rate*wheel_gain,MIN_RATE,MAX_RATE)
+	cadence_rate = wheel_gesture.rate
+
 func pause() -> void:
 	target_metres = metres
 	regrip_required = false
+	wheel_gesture.reset()
+	wheel_gain = 1.0
 	if motion!=null: motion.finish_without_feed()
 
 func reset() -> void:
 	if motion!=null: motion.reset()
+	wheel_gesture.reset()
+	wheel_gesture_enabled = false
+	wheel_gain = 1.0
 	if length_budget != null:
 		metres += length_budget.transfer(initial_metres - metres)
 	else:

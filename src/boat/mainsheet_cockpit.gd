@@ -30,6 +30,7 @@ var resting_end := PackedVector3Array()
 var rig_clearance_path := PackedVector3Array()
 var expanded_contact_support := false
 var end_lead := PackedVector3Array()
+var material_floor_path := PackedVector3Array()
 
 func setup(value: Node3D, floor_mesh: MeshInstance3D) -> void:
 	actor = value
@@ -66,7 +67,10 @@ func build(cockpit_metres: float, end_metres: float) -> PackedVector3Array:
 	actor.sheet_study.manual_cache_revision = -1
 	var raw: PackedVector3Array
 	var local_trim := .16 if purchase_join else 1.8
-	if actor.sheet_control.regrip_time>=0:
+	var short_prefix: bool = supported_lead.has_method("needs_full_prefix") and not supported_lead.needs_full_prefix()
+	if short_prefix and actor.sheet_control.continuous_relay:
+		raw = supported_lead.contact_prefix(actor.sheet_control.regrip.held_points(),actor)
+	elif actor.sheet_control.regrip_time>=0:
 		raw = actor.sheet_control.regrip.rope_points(local_trim)
 	else: raw = actor.sheet_study.manual_points(local_trim)
 	var local_done := Time.get_ticks_usec()
@@ -75,10 +79,13 @@ func build(cockpit_metres: float, end_metres: float) -> PackedVector3Array:
 	var outlet := raw[held_index]
 	current_outlet = outlet
 	if purchase_join:
-		# Preserve the held path, outlet turn and first 100mm of local drape.
+		if supported_lead.has_method("set_material_budget"): supported_lead.set_material_budget(cockpit_metres,floor_lay.minimum_path.slice(0,17),material_floor_path)
+		# Preserve the held path and physical outlet turn. The legacy solver
+		# additionally seeds itself from the first 100mm of authored drape.
 		# The far span shares the floor lay's fixed inlet; a newly discovered
 		# earlier floor touch must not teleport all the later rope onto a coil.
 		raw = supported_lead.build(raw.slice(0,held_index+21),floor_lay.minimum_path[0],actor,hull,rig_clearance_path,expanded_contact_support)
+		if short_prefix and actor.sheet_control.continuous_relay: actor.sheet_study.manual_cache = raw
 	var supported_done := Time.get_ticks_usec()
 	if actor.sheet_study.deck_fitting!=null:
 		raw = JOIN.remote(raw,actor.sheet_study.block_anchor) if purchase_join else actor.sheet_study.deck_fitting.deck_lead_route(raw,RADIUS)
@@ -124,6 +131,7 @@ func build(cockpit_metres: float, end_metres: float) -> PackedVector3Array:
 			result.append_array(connector.slice(1))
 			var laid: PackedVector3Array = floor_lay.build(ground_budget-connector_length)
 			if laid.is_empty(): return PackedVector3Array()
+			material_floor_path = laid
 			result.append_array(laid.slice(1))
 		end_lead = result
 		var knot := _end_at(result[-1],result[-1]-result[-2])

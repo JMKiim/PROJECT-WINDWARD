@@ -7,4 +7,5 @@ script = ExtResource("1")
 complete_mainsheet_enabled = true
 irregular_floor_enabled = true
 hiking_sheet_controls_enabled = false
+continuous_sheet_enabled = true
 extension_tube_metres = 1.07

@@ -1,7 +1,8 @@
 extends Node3D
 
 ## Isolated authored-clip actor. It never instantiates the production sailor or
-## its control solver. Runtime blends authored local bone tracks; no limb IK.
+## its control solver. Authored tracks own actions; the optional look layer
+## compensates shoulder movement analytically without searching action poses.
 const RIG := preload("res://src/boat/assets/sailor_rig_base.tscn")
 const LAYOUT := preload("res://src/boat/animation/rudder_layer_layout.gd")
 const GRIP := preload("res://src/boat/animation/authored_grip_profile.gd")
@@ -11,6 +12,8 @@ const SHEET_CONTROL := preload("res://src/boat/animation/sheet_control_player.gd
 const POSE_MIRROR := preload("res://src/boat/animation/authored_pose_mirror.gd")
 const BODY_SCALE := 1.75 / 1.819586
 const INSPECTION_BODY := preload("res://src/boat/animation/rudder_inspection_body.gdshader")
+const LOOK_POSE := preload("res://src/boat/animation/seated_look_pose.gd")
+const HEAD_MASK_THRESHOLD := .05
 
 var skeleton: Skeleton3D
 var players: Dictionary = {}
@@ -29,6 +32,10 @@ var sheet_control: Node
 var pose_mirror := POSE_MIRROR.new()
 var extension_span := 1.10
 var hiking_sheet_grid: RefCounted
+var look_pose := LOOK_POSE.new()
+var look_enabled := false
+var neck_cap: MeshInstance3D
+var eye_offset := Vector3(0,.098772,.083336)
 
 func prepare_hiking_sheet_controls(highest_level := 8) -> bool:
 	var bank := preload("res://src/boat/animation/hiking_sheet_bank.gd")
@@ -126,6 +133,10 @@ func set_amount(value: float) -> void:
 				var held := skeleton.get_bone_pose_rotation(bone)
 				var rest := skeleton.get_bone_rest(bone).basis.get_rotation_quaternion()
 				skeleton.set_bone_pose_rotation(bone, held.slerp(rest, 0.10 * grip_loosen))
+	if look_enabled:
+		var helper: float = SHEET_CONTROL.REGRIP.SOURCE.helper_weight(sheet_control.regrip_time)*sheet_control.weight if sheet_control.regrip_time>=0 else 0.0
+		look_pose.apply(skeleton,tiller_hand(),helper)
+		if neck_cap!=null and neck_cap.visible: neck_cap.update_pose()
 
 
 func _clip_name(side: int, level: int) -> String:
@@ -254,21 +265,37 @@ func joint_boat() -> Vector3:
 
 
 func eye_boat() -> Vector3:
-	return bone_pose_boat("Head") * Vector3(0, 0.115, 0.145)
+	return bone_pose_boat("Head") * eye_offset
 
 
 func set_first_person(enabled: bool) -> void:
+	look_enabled = enabled
 	body_material.set_shader_parameter("hide_head", enabled)
 	skeleton.get_node("Eyebrows").visible = not enabled
 	skeleton.get_node("Eyes").visible = not enabled
+	if neck_cap!=null: neck_cap.visible = enabled
+	set_amount(amount)
+
+
+func set_look(horizontal: float, vertical: float) -> void:
+	look_pose.set_target(horizontal,vertical)
+	if look_enabled: set_amount(amount)
 
 
 func _configure_body_material() -> void:
 	# Reuse the production head-weight masking principle without loading its actor.
 	var body := skeleton.get_node("SuperHero_Male") as MeshInstance3D
 	var source := body.mesh.surface_get_material(0) as StandardMaterial3D
+	var eyes := skeleton.get_node("Eyes") as MeshInstance3D
+	for index in eyes.skin.get_bind_count():
+		if eyes.skin.get_bind_name(index)==&"Head":
+			# The supplied eyes are rigidly weighted to Head. Use their actual
+			# binocular centre rather than an offset in front of the face.
+			eye_offset = eyes.skin.get_bind_pose(index)*eyes.mesh.get_aabb().get_center()
+			break
 	body_material = ShaderMaterial.new()
 	body_material.shader = INSPECTION_BODY
+	body_material.set_shader_parameter("head_mask_threshold",HEAD_MASK_THRESHOLD)
 	for channel in ["albedo", "normal", "roughness"]:
 		body_material.set_shader_parameter(channel + "_texture", source.get(channel + "_texture"))
 	for index in body.skin.get_bind_count():
@@ -276,6 +303,12 @@ func _configure_body_material() -> void:
 			body_material.set_shader_parameter("head_bind_index", index)
 			break
 	body.material_override = body_material
+	neck_cap = preload("res://src/boat/animation/first_person_neck_cap.gd").new()
+	neck_cap.name = "FirstPersonNeckClosure"
+	body.get_parent().add_child(neck_cap)
+	if not neck_cap.setup(body,body_material.get_shader_parameter("head_bind_index"),HEAD_MASK_THRESHOLD):
+		push_error("First-person neck closure has no matching boundary")
+	neck_cap.visible = false
 
 
 func _disable_modifiers(node: Node) -> void:

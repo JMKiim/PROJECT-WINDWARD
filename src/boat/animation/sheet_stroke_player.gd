@@ -185,6 +185,7 @@ func manual_points(trim: float) -> PackedVector3Array:
 	return result
 
 func manual_held_points() -> PackedVector3Array:
+	if actor.sheet_control.continuous_relay: return actor.sheet_control.regrip.held_points()
 	var hand: PackedVector3Array = actor.sheet_channel_boat()
 	var path := _work_loaded_lead(block_anchor, hand[0])
 	for index in range(1, hand.size()): path.append(hand[index])

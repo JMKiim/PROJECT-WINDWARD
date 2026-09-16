@@ -36,7 +36,7 @@ func build(value: Node3D) -> void:
 	for title in SESSION.SYSTEM_NAMES: system_select.add_item(title)
 	system_select.item_selected.connect(lab.select_system)
 	row.add_child(system_select)
-	_label("Wheel down: haul / up: ease | A/D: rudder", row)
+	_label("Wheel down/up: haul/ease | Shift: coarse | A/D: rudder", row)
 	_button("Reset trim [R]", lab.reset_action, row)
 	_button("Reset setup", lab.reset_scenario, row)
 	row = _row(stack)
@@ -98,7 +98,7 @@ func refresh() -> void:
 	lab.sheet_status.text = "%s | Trim %.1f / target %.1f mm | Range %.0f-%.0f mm | Idle %.2fs: return hands, keep trim | Repeated handover: %s" % [input.state, input.metres * 1000, input.target_metres * 1000, input.minimum_metres*1000, input.maximum_metres*1000, input.IDLE_SECONDS,repeat_status]
 	if input.length_budget!=null:
 		lab.sheet_status.text += " | Total %.2fm / Rig %.2fm / Cockpit %.2fm / Ends %.2fm" % [input.length_budget.total_metres,input.length_budget.rig_metres,input.length_budget.cockpit_metres,input.length_budget.fixed_end_metres+input.length_budget.free_end_metres]
-	input_hint.text = "%s | Wheel down/up: haul/ease | A/D: rudder | Z/X: hike | F4: first person | Click: look / Esc: cursor | H: panel" % SESSION.SYSTEM_NAMES[session.selected_system]
+	input_hint.text = "%s | Wheel: fine; spin faster: more trim / Shift: coarse | A/D: rudder | Z/X: hike | F4: first person | Click: look / Esc: cursor | H: panel" % SESSION.SYSTEM_NAMES[session.selected_system]
 	input_hint.text += "\n%.1f mm | range %.0f-%.0f mm | %s" % [input.metres * 1000, input.minimum_metres*1000, input.maximum_metres*1000, input.state if reason.is_empty() else reason]
 
 func _row(parent: Node) -> HBoxContainer:

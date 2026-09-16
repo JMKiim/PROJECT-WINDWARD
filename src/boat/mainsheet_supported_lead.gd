@@ -7,12 +7,26 @@ const CONTACT := preload("res://src/boat/rope_contact_geometry.gd")
 var history := PackedVector3Array()
 var last_revision := -1
 var last_pass_count := 0
+var trace_enabled := false
+var trace_steps := []
+
+func _trace_step(before: PackedVector3Array,after: PackedVector3Array,stage: String) -> void:
+	if not trace_enabled or before.size()!=after.size(): return
+	var largest := 0.0
+	var at := -1
+	for index in after.size():
+		var distance := before[index].distance_to(after[index])
+		if distance>largest:
+			largest = distance
+			at = index
+	trace_steps.append({"stage":stage,"mm":largest*1000,"index":at})
 
 func reset() -> void:
 	history.clear()
 	last_revision = -1
 
 func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshInstance3D,rig_path: PackedVector3Array = PackedVector3Array(),expanded_contacts := false) -> PackedVector3Array:
+	if trace_enabled: trace_steps.clear()
 	var fixed_count: int = actor.sheet_study.MANUAL_HELD_SEGMENTS+3
 	var fixed := prefix.slice(0,fixed_count)
 	var result := fixed.duplicate()
@@ -36,20 +50,28 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	var segments := curve.size()-1
 	var delta: float = clampf(actor.sheet_study.manual_delta,0,.067)
 	var warm := history.size()==curve.size() and history[0].distance_to(start)<.25
+	var temporal_centres := PackedVector3Array()
 	if warm:
+		temporal_centres = history.duplicate()
 		var attachment := start-history[0]
 		var follow := 1-exp(-5.0*delta)
 		if last_revision==actor.sheet_study.manual_revision: follow = 0.0
 		for index in range(1,segments):
 			var t := index/float(segments)
 			var retained := history[index]+attachment*pow(1-t,2)
+			temporal_centres[index] = retained
 			curve[index] = retained.lerp(curve[index],follow)
+		temporal_centres[0] = curve[0]
+		temporal_centres[-1] = curve[-1]
+	_trace_step(history,curve,"follow")
 	# One time-scaled smoothing pass retains the chosen side of each rounded
 	# support. Rebuilding/projecting a fresh spline can switch across a leg.
 	var smooth_weight := 1-exp(-8.0*delta)
 	for index in range(2,segments-1):
 		curve[index] = curve[index].lerp((curve[index-1]+curve[index+1])*.5,smooth_weight)
+	var before_distribution := curve.duplicate() if trace_enabled else PackedVector3Array()
 	curve = _redistribute(curve)
+	_trace_step(before_distribution,curve,"redistribute")
 	var supports: Array = actor.sheet_study._tail_supports()
 	if expanded_contacts:
 		# A loose line cannot thread through the tiny concave gaps between
@@ -130,6 +152,8 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 				var group: Array = curve_groups[group_index]
 				group[2] = _group_bounds(curve,group[0],group[1])
 		last_pass_count = pass_index+1
+		if expanded_contacts: _bound_corrections(curve,temporal_centres,delta)
+		_trace_step(before_pass,curve,"projection "+str(pass_index))
 		var largest_change := 0.0
 		for index in range(1,segments):
 			largest_change = maxf(largest_change,curve[index].distance_squared_to(before_pass[index]))
@@ -164,6 +188,8 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 					_project_link(curve,index,support[0],support[1],support[2]+.002)
 			travelled += curve[index].distance_to(curve[index+1])
 		if expanded_contacts: _clear_free_self_contact(curve)
+		if expanded_contacts: _bound_corrections(curve,temporal_centres,delta)
+		_trace_step(before_closure,curve,"closure "+str(sweep))
 		var closure_change := 0.0
 		for index in range(1,segments): closure_change = maxf(closure_change,curve[index].distance_squared_to(before_closure[index]))
 		if expanded_contacts and closure_change<.000025*.000025: break
@@ -171,6 +197,34 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	last_revision = actor.sheet_study.manual_revision
 	result.append_array(curve.slice(1))
 	return result
+
+func _bound_corrections(curve: PackedVector3Array,centres: PackedVector3Array,delta: float) -> void:
+	if centres.size()!=curve.size(): return
+	# All contact iterations share one elapsed-time budget. Otherwise twelve
+	# closure sweeps can unroll a trapped fold in a single rendered frame.
+	# Moving hand attachment is already carried by the prediction centres.
+	for index in range(1,curve.size()-1):
+		curve[index] = centres[index]+(curve[index]-centres[index]).limit_length(1.6*delta)
+	# A folded polyline can shed substantial arc length even when every
+	# vertex moves a little. Bound that redistribution as well, otherwise
+	# the floor consumes/releases the entire fold in one update.
+	var reference_length := _length(centres)
+	var arc_budget := 2.4*delta
+	if absf(_length(curve)-reference_length)<=arc_budget: return
+	var candidate := curve.duplicate()
+	var low := 0.0
+	var high := 1.0
+	for iteration in 8:
+		var fraction := (low+high)*.5
+		for index in range(1,curve.size()-1): curve[index] = centres[index].lerp(candidate[index],fraction)
+		if absf(_length(curve)-reference_length)>arc_budget: high = fraction
+		else: low = fraction
+	for index in range(1,curve.size()-1): curve[index] = centres[index].lerp(candidate[index],low)
+
+func _length(path: PackedVector3Array) -> float:
+	var length := 0.0
+	for index in path.size()-1: length += path[index].distance_to(path[index+1])
+	return length
 
 func _clear_free_self_contact(curve: PackedVector3Array) -> void:
 	# A final hand/support correction can fold two loose links together after

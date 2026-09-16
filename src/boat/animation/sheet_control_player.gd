@@ -13,6 +13,17 @@ var regrip: Node
 # Negative means ordinary manual work. Only contact tests enable the bridge
 # until the complete rig allocation and distance-driven handover are joined.
 var regrip_time := -1.0
+var continuous_relay := false
+
+func use_continuous_relay() -> void:
+	if continuous_relay: return
+	var candidate := load("res://src/boat/animation/sheet_relay_player.gd").new() as Node
+	add_child(candidate)
+	candidate.setup(actor)
+	candidate.prepare()
+	regrip.queue_free()
+	regrip = candidate
+	continuous_relay = true
 
 func setup(value: Node3D) -> void:
 	actor = value
@@ -52,6 +63,12 @@ func setup(value: Node3D) -> void:
 
 func sample() -> void:
 	if weight <= 0.0: return
+	if continuous_relay:
+		if regrip_time>=0: regrip.sample(regrip_time,weight)
+		else: regrip.sample_entry(work,weight)
+		_sliding_sheet_fingers(actor.sheet_hand())
+		_sliding_bone(actor.tiller_hand()+"ThumbDistal",.035)
+		return
 	if regrip_time >= 0.0:
 		regrip.sample(regrip_time,weight)
 		# A fixed trim during a hand return requires sliding contact, not an

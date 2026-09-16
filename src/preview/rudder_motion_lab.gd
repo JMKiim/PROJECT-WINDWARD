@@ -14,6 +14,7 @@ const COMPLETE_SHEET := preload("res://src/preview/training_mainsheet.gd")
 @export var complete_mainsheet_enabled := false
 @export var irregular_floor_enabled := false
 @export var hiking_sheet_controls_enabled := false
+@export var continuous_sheet_enabled := false
 @export_range(.50,1.50,.01) var extension_tube_metres := 1.070
 var complete_sheet: Node3D
 
@@ -87,7 +88,7 @@ func _process(delta: float) -> void:
 	# The distance profile must see this frame's steering, not the previous
 	# frame's angle. Posture and hand state are evaluated together afterward.
 	session.advance(delta)
-	set_amount(actor.amount)
+	_refresh_preview()
 	if not is_equal_approx(previous_hike, actor.hike) and selected_view != 3:
 		set_view(selected_view, false)
 	update_ms = float(Time.get_ticks_usec() - started) / 1000.0
@@ -95,6 +96,9 @@ func _process(delta: float) -> void:
 
 func set_amount(value: float) -> void:
 	actor.set_amount(value)
+	_refresh_preview()
+
+func _refresh_preview() -> void:
 	if slider:
 		slider.set_value_no_signal(actor.amount)
 	if hike_slider:
@@ -167,6 +171,7 @@ func _set_view_base(index: int, reset_look: bool) -> void:
 		if reset_look:
 			look_pitch = deg_to_rad(lerpf(55.0, 35.0, actor.hike))
 			look_yaw = 0.0
+		actor.set_look(look_yaw,look_pitch)
 		_update_first_person_camera()
 		return
 	if index == 6:
@@ -193,7 +198,7 @@ func _set_view_base(index: int, reset_look: bool) -> void:
 func _update_first_person_camera() -> void:
 	camera.position = actor.eye_boat()
 	var head: Basis = actor.bone_pose_boat("Head").basis.orthonormalized()
-	var direction := head * Basis(Vector3.UP, look_yaw) * Basis(Vector3.RIGHT, look_pitch) * Vector3.BACK
+	var direction: Vector3 = head * actor.look_pose.eye_basis * Vector3.BACK
 	if follow_work_area:
 		# Explicit inspection option; independent of selected operation mode.
 		var target: Vector3 = (actor.palm_boat("Left") + actor.palm_boat("Right")) * 0.5 + Vector3(0, 0.06, 0)
@@ -253,7 +258,7 @@ func _input(event: InputEvent) -> void:
 	if not is_finite(event.factor) or event.factor < 0.0:
 		return
 	var notches: float = event.factor if event.factor > 0.0 else 1.0
-	session.input_sheet_wheel(notches if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -notches)
+	session.input_sheet_wheel(notches if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -notches,event.shift_pressed)
 	get_viewport().set_input_as_handled()
 	controls.refresh()
 
@@ -261,7 +266,7 @@ func _input(event: InputEvent) -> void:
 func apply_mouse_look(pixels: Vector2) -> void:
 	if not pixels.is_finite(): return
 	if selected_view == 3:
-		look_yaw = clampf(look_yaw - pixels.x * MOUSE_LOOK_RADIANS, -1.45, 1.45)
+		look_yaw = clampf(look_yaw - pixels.x * MOUSE_LOOK_RADIANS, -actor.LOOK_POSE.MAX_YAW, actor.LOOK_POSE.MAX_YAW)
 		look_pitch = clampf(look_pitch + pixels.y * MOUSE_LOOK_RADIANS, deg_to_rad(-60), deg_to_rad(85))
 	else:
 		inspection_yaw = wrapf(inspection_yaw - pixels.x * MOUSE_LOOK_RADIANS, -PI, PI)
@@ -362,17 +367,18 @@ func _create_stage() -> void:
 	world.environment.background_color = Color("172431")
 	world.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	world.environment.ambient_light_color = Color("c8def0")
-	world.environment.ambient_light_energy = 0.65
+	world.environment.ambient_light_energy = 0.35
 	world.environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	add_child(world)
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -35, 0)
-	sun.light_energy = 0.95
+	sun.light_energy = 0.70
 	sun.shadow_enabled = true
+	sun.directional_shadow_max_distance = 12.0
 	add_child(sun)
 	var fill := DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-15, 150, 0)
-	fill.light_energy = 0.25
+	fill.light_energy = 0.12
 	add_child(fill)
 	var hull := HULL.new()
 	hull.inspection_mast_fit = true

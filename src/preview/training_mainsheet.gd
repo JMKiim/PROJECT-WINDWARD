@@ -24,6 +24,14 @@ var motion_profile: Resource = FEED
 func setup(value: Node3D) -> bool:
 	lab = value
 	var expanded := lab.actor.hiking_sheet_grid!=null
+	if lab.continuous_sheet_enabled:
+		if expanded: return false
+		var reserve_path := "res://src/boat/animation/sheet_relay_envelope.tres"
+		if not ResourceLoader.exists(reserve_path): return false
+		length_envelope = load(reserve_path)
+		motion_profile = load("res://src/boat/animation/sheet_relay_feed.tres")
+		lab.actor.sheet_control.use_continuous_relay()
+		cockpit.supported_lead = load("res://src/boat/mainsheet_material_lead.gd").new()
 	if expanded:
 		var envelope_path := "res://src/boat/animation/hiking_sheet_envelope.tres"
 		if not ResourceLoader.exists(envelope_path): return false
@@ -65,6 +73,7 @@ func update_geometry(display := true) -> bool:
 	if not configured: return false
 	var actor: Node3D = lab.actor
 	var key := [actor.sheet_study.manual_revision,ledger.rig_metres,ledger.cockpit_metres,actor.amount,actor.seat_side,actor.hike,actor.sheet_control.work,actor.sheet_control.regrip_time,actor.sheet_control.weight,actor.sheet_control.slip,actor.sheet_study.gravity_boat(),actor.extension_span,actor.hiking_sheet_grid,cockpit.expanded_contact_support]
+	key.append_array([actor.look_enabled,actor.look_pose.yaw,actor.look_pose.pitch])
 	if key==geometry_key and last_result.get("valid",false):
 		if display:
 			rig.set_opening(rig.opening,true)

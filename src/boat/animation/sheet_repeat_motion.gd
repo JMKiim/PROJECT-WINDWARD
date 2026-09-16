@@ -5,6 +5,7 @@ extends RefCounted
 const PROFILE := preload("res://src/boat/animation/sheet_feed_profile.gd")
 const SOURCE := preload("res://src/boat/animation/sheet_regrip_source.gd")
 const MAX_WORK_RATE := 1.25
+const MAX_HAND_SPEED := 3.2
 const FULL_PACE_RATE := .60
 var profile: Resource
 var bridge_time := -1.0
@@ -51,9 +52,11 @@ func advance(input: RefCounted, delta: float, steering: float) -> void:
 	# Preserve every authored contact; cadence changes the bounded motion clock,
 	# never the accepted distance or the ordinary idle return speed.
 	# Catch-up rate includes queued travel; it is not a wheel cadence signal.
-	# Reach the fast authored clock at 30 full notches/s, without increasing
-	# millimetres per notch. Fine or isolated input keeps the slow work clock.
-	var cadence: float = clampf((input.cadence_rate-input.MIN_RATE)/(FULL_PACE_RATE-input.MIN_RATE),0.0,1.0)
+	# Interactive wheels use filtered physical cadence (15 notches/s for the
+	# fast clock); raw distance fixtures retain their original 30-notch clock.
+	# Fine or isolated input keeps the slow work clock.
+	var full_pace: float = input.WHEEL_GESTURE.FULL_PACE_RATE if input.wheel_gesture_enabled else FULL_PACE_RATE
+	var cadence: float = clampf((input.cadence_rate-input.MIN_RATE)/(full_pace-input.MIN_RATE),0.0,1.0)
 	var desired_pace: float = lerpf(1.0,3.0,cadence)
 	pace = move_toward(pace, desired_pace, delta * 10.0)
 	if bridge_time>=0:
@@ -74,6 +77,7 @@ func advance(input: RefCounted, delta: float, steering: float) -> void:
 		var requested := clampf(pending,-input.rate*delta,input.rate*delta)
 		var next_work: float = profile.advance_distance("work",steering,input.work,requested)
 		next_work = move_toward(input.work,next_work,MAX_WORK_RATE*pace*delta)
+		next_work = _bound_hand_travel(input.work,next_work,delta)
 		var distance: float = profile.length_at("work",steering,next_work)-profile.length_at("work",steering,input.work)
 		last_feed = _transfer(input,clampf(distance,minf(0,requested),maxf(0,requested)))
 		input.work = profile.advance_distance("work",steering,input.work,last_feed)
@@ -92,6 +96,20 @@ func advance(input: RefCounted, delta: float, steering: float) -> void:
 			input.state = "REST" if is_equal_approx(input.work,.5) else "RETURN"
 		else: input.state = "HOLD"
 		input.slip = move_toward(input.slip,1.0 if input.state=="RETURN" else 0.0,delta*8.0)
+
+func _bound_hand_travel(current: float, requested: float, delta: float) -> float:
+	# Clip coordinates have non-uniform eased lanes. Bound physical travel
+	# as well as clip speed without changing the accepted rope distance.
+	var start := SOURCE.CONTROL.palm(current)
+	var budget := MAX_HAND_SPEED*delta
+	if start.distance_to(SOURCE.CONTROL.palm(requested))<=budget: return requested
+	var low := 0.0
+	var high := 1.0
+	for iteration in 10:
+		var fraction := (low+high)*.5
+		if start.distance_to(SOURCE.CONTROL.palm(lerpf(current,requested,fraction)))>budget: high = fraction
+		else: low = fraction
+	return lerpf(current,requested,low)
 
 func _advance_bridge(input: RefCounted, delta: float, steering: float) -> void:
 	var pending: float = input.target_metres-input.metres
