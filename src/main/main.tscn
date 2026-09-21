@@ -29,6 +29,7 @@ ambient_light_color = Color(0.66, 0.78, 0.9, 1)
 ambient_light_energy = 0.56
 tonemap_mode = 2
 tonemap_exposure = 0.88
+tonemap_white = 6.0
 
 [sub_resource type="ShaderMaterial" id="OceanMaterial"]
 render_priority = 0
@@ -86,6 +87,7 @@ target_path = NodePath("../Boat")
 environment_path = NodePath("../SailingEnvironment")
 
 [node name="Boat" parent="." unique_id=1173878284 instance=ExtResource("1_boat")]
+seated_controls_enabled = true
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.06, 0)
 environment_path = NodePath("../SailingEnvironment")
 
@@ -179,8 +181,10 @@ text = "대수속도  0.0 kn
 layout_mode = 2
 theme_override_colors/font_color = Color(0.68, 0.75, 0.78, 1)
 theme_override_font_sizes/font_size = 12
-text = "A/D 러더 · W/S 시트 · C 카메라
-탑다운: 휠 확대/축소 · 1인칭: 마우스 시선"
+text = "A/D 러더 · Space 중립 · C 카메라
+휠 아래/W 당김 · 휠 위/S 풀기
+탑다운: Ctrl+휠 확대/축소 · 우클릭 회전
+1인칭: 마우스 시선 · Esc 커서 해제"
 
 [node name="MiniMap" type="Control" parent="HUD" unique_id=1624970855]
 layout_mode = 3

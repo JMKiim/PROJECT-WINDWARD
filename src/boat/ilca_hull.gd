@@ -97,7 +97,7 @@ func _build_hull_mesh() -> ArrayMesh:
 	shell.index()
 	shell.commit(hull_mesh)
 	hull_mesh.surface_set_name(0, "outer_shell")
-	hull_mesh.surface_set_material(0, _make_material(Color(0.97, 0.975, 0.96), 0.38))
+	hull_mesh.surface_set_material(0, _make_material(Color(0.82, 0.835, 0.815), 0.38))
 
 	var deck := SurfaceTool.new()
 	_surface_kind = 1
@@ -109,7 +109,7 @@ func _build_hull_mesh() -> ArrayMesh:
 	deck.index()
 	deck.commit(hull_mesh)
 	hull_mesh.surface_set_name(1, "deck")
-	hull_mesh.surface_set_material(1, _make_material(Color(0.975, 0.978, 0.965), 0.54))
+	hull_mesh.surface_set_material(1, _make_material(Color(0.82, 0.835, 0.815), 0.54))
 
 	var cockpit := SurfaceTool.new()
 	_surface_kind = 2
@@ -122,7 +122,7 @@ func _build_hull_mesh() -> ArrayMesh:
 	hull_mesh.surface_set_name(2, "cockpit")
 	# The well and deck share a gelcoat tone. Lighting, rather than emission,
 	# reveals the wall fillets and the forward moulding.
-	var cockpit_material := _make_material(Color(0.975, 0.978, 0.965), 0.58)
+	var cockpit_material := _make_material(Color(0.82, 0.835, 0.815), 0.58)
 	hull_mesh.surface_set_material(2, cockpit_material)
 
 	var molded_edges := SurfaceTool.new()
@@ -132,7 +132,7 @@ func _build_hull_mesh() -> ArrayMesh:
 	molded_edges.index()
 	molded_edges.commit(hull_mesh)
 	hull_mesh.surface_set_name(3, "gunwale_lip")
-	hull_mesh.surface_set_material(3, _make_material(Color(0.97, 0.97, 0.95), 0.42))
+	hull_mesh.surface_set_material(3, _make_material(Color(0.82, 0.83, 0.805), 0.42))
 
 	var sheer_stripe := SurfaceTool.new()
 	_surface_kind = 4

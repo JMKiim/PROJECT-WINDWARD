@@ -798,20 +798,24 @@ func _build_eye_strap() -> void:
 
 
 func _build_gooseneck() -> void:
-	# The gooseneck is a mast band, twin lug and transverse pin—not a deck eye.
-	_add_cylinder("MastBand", 0.060, 0.061, Vector3(0.0, 0.0, 0.0), _stainless)
+	# A 45 mm wide, 2 mm saddle on the lower spar, not a solid 122 mm band.
+	# Pin/saddle dimensions follow ASP4109; fore-aft offsets remain provisional.
+	for index in 16:
+		var angle := lerpf(-.72,.72,(index+.5)/16.0)
+		_add_box("Saddle%d" % index,Vector3(.0032,.055,.002),Vector3(sin(angle)*.03275,0,cos(angle)*.03275),_stainless,Vector3(0,angle,0))
 	for side in [-1.0, 1.0]:
 		_add_box(
 			"PortLug" if side < 0.0 else "StarboardLug",
-			Vector3(0.010, 0.050, 0.105),
-			Vector3(side * 0.027, 0.0, 0.080),
+			Vector3(0.002, 0.018, 0.081),
+			Vector3(side * 0.008, 0.0, 0.0705),
 			_stainless
 		)
+		for y in [-.018,.018]:
+			_add_cylinder("Rivet",.003,.0025,Vector3(side*.015,y,.030),_stainless,Vector3(PI*.5,0,0))
 	_add_cylinder(
-		"BoomPin", 0.074, 0.010, Vector3(0.0, 0.0, 0.105), _black,
+		"PitchAxle", 0.024, 0.003, Vector3(0.0, 0.0, 0.105), _stainless,
 		Vector3(0.0, 0.0, PI * 0.5)
 	)
-	_add_box("BoomJaw", Vector3(0.044, 0.039, 0.100), Vector3(0.0, 0.0, 0.142), _black)
 
 
 func _build_sail_cringle() -> void:

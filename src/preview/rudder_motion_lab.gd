@@ -15,6 +15,7 @@ const COMPLETE_SHEET := preload("res://src/preview/training_mainsheet.gd")
 @export var irregular_floor_enabled := false
 @export var hiking_sheet_controls_enabled := false
 @export var continuous_sheet_enabled := false
+@export var embedded_controls := false
 @export_range(.50,1.50,.01) var extension_tube_metres := 1.070
 var complete_sheet: Node3D
 
@@ -68,8 +69,13 @@ func _ready() -> void:
 		add_child(complete_sheet)
 		if not complete_sheet.setup(self):
 			push_error("Complete mainsheet geometry could not be configured")
-	_create_controls()
-	set_view(0)
+	if not embedded_controls:
+		_create_controls()
+		set_view(0)
+	else:
+		set_process(false)
+		set_process_input(false)
+		set_process_unhandled_key_input(false)
 	set_amount(0.0)
 
 
@@ -104,6 +110,8 @@ func _refresh_preview() -> void:
 	if hike_slider:
 		hike_slider.set_value_no_signal(session.requested_hike)
 	rudder.rotation.y = actor.rudder_angle()
+	if complete_sheet!=null:
+		complete_sheet.rig.tiller_angle = actor.rudder_angle()
 	var joint: Vector3 = actor.joint_boat()
 	var palm: Vector3 = actor.palm_boat()
 	extension.position = joint
@@ -169,7 +177,7 @@ func _set_view_base(index: int, reset_look: bool) -> void:
 	camera.near = 0.025 if index >= 3 else 0.04
 	if index == 3:
 		if reset_look:
-			look_pitch = deg_to_rad(lerpf(55.0, 35.0, actor.hike))
+			look_pitch = deg_to_rad(20.0)
 			look_yaw = 0.0
 		actor.set_look(look_yaw,look_pitch)
 		_update_first_person_camera()
@@ -205,7 +213,7 @@ func _update_first_person_camera() -> void:
 		var forward := (target - camera.position).normalized()
 		var right := forward.cross(Vector3.UP).normalized()
 		direction = Basis(Vector3.UP, look_yaw) * Basis(right, look_pitch - deg_to_rad(55)) * forward
-	camera.look_at(camera.position + direction, Vector3.UP)
+	camera.look_at(to_global(camera.position + direction), global_basis * Vector3.UP)
 	camera.fov = 72.0
 
 
@@ -361,25 +369,40 @@ func inspection_snapshot() -> Dictionary:
 
 
 func _create_stage() -> void:
+	if not embedded_controls:
+		_create_lighting()
+	_create_deck()
+	if not embedded_controls:
+		camera = Camera3D.new()
+		camera.near = 0.04
+		camera.current = true
+		add_child(camera)
+
+
+func _create_lighting() -> void:
 	var world := WorldEnvironment.new()
 	world.environment = Environment.new()
 	world.environment.background_mode = Environment.BG_COLOR
 	world.environment.background_color = Color("172431")
 	world.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	world.environment.ambient_light_color = Color("c8def0")
-	world.environment.ambient_light_energy = 0.35
+	world.environment.ambient_light_energy = 0.22
 	world.environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	world.environment.tonemap_white = 6.0
 	add_child(world)
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -35, 0)
-	sun.light_energy = 0.70
+	sun.light_energy = 0.55
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 12.0
 	add_child(sun)
 	var fill := DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-15, 150, 0)
-	fill.light_energy = 0.12
+	fill.light_energy = 0.08
 	add_child(fill)
+
+
+func _create_deck() -> void:
 	var hull := HULL.new()
 	hull.inspection_mast_fit = true
 	hull.name = "Hull"
@@ -434,10 +457,6 @@ func _create_stage() -> void:
 		line.visible = false
 		add_child(line)
 		study_lines.append(line)
-	camera = Camera3D.new()
-	camera.near = 0.04
-	camera.current = true
-	add_child(camera)
 
 
 func _hardware(kind: int, location: Vector3, parent: Node, parameters: Dictionary = {}) -> MeshInstance3D:

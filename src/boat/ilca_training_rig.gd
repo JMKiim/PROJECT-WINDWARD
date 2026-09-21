@@ -51,6 +51,9 @@ var fixed_view: Node3D
 var aft_winding := 0.0
 var traveller_winding := 0.0
 var becket_winding := 1.0
+var gooseneck: MeshInstance3D
+var tiller_angle := 0.0
+var traveller_path := PackedVector3Array()
 
 func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	hull = floor_mesh
@@ -60,12 +63,31 @@ func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	_tube("LowerMast",.03175,LOWER_LENGTH,Vector3(0,MAST_BASE_Y+LOWER_LENGTH*.5,HULL.MAST_CENTER_Z),self)
 	_tube("UpperMast",.0254,UPPER_LENGTH,Vector3(0,MAST_BASE_Y+LOWER_LENGTH-UPPER_INSERTION+UPPER_LENGTH*.5,HULL.MAST_CENTER_Z),self)
 	var goose := _part("Gooseneck",HARDWARE.PartKind.GOOSENECK,Vector3(0,MAST_BASE_Y+GOOSENECK_ABOVE_BASE,HULL.MAST_CENTER_Z),self)
+	gooseneck = goose
 	boom_pivot = Node3D.new()
 	boom_pivot.name = "BoomPivot"
 	boom_pivot.position = to_local(goose.rope_anchor_global())
 	add_child(boom_pivot)
 	boom = _tube("Boom",.0255,BOOM_LENGTH,Vector3(0,0,BOOM_LENGTH*.5),boom_pivot)
 	boom.rotation.x = PI*.5
+	var spigot := _tube("BoomSpigot",.006,.085,Vector3(0,0,.030),boom_pivot)
+	spigot.rotation.x = PI*.5
+	# The front plug is an annulus, so the spigot enters an actual opening.
+	var plug := MeshInstance3D.new()
+	plug.name = "BoomFrontPlug"
+	var ring := TorusMesh.new()
+	ring.inner_radius = .0063
+	ring.outer_radius = .0255
+	ring.rings = 32
+	ring.ring_segments = 12
+	plug.mesh = ring
+	plug.rotation.x = PI*.5
+	plug.position.z = .004
+	var plastic := StandardMaterial3D.new()
+	plastic.albedo_color = Color("22282b")
+	plastic.roughness = .65
+	plug.material_override = plastic
+	boom_pivot.add_child(plug)
 	# The block's neck already points up toward its attachment. Preserve the
 	# sheave datum while placing the neck at the underside of the boom.
 	forward_block = _boom_block("ForwardBoomBlock",Vector3(0,-.0605,BOOM_LENGTH-FORWARD_BLOCK_FROM_END))
@@ -98,12 +120,13 @@ func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	add_child(traveller_view)
 	fixed_view = VIEW.new()
 	add_child(fixed_view)
-	minimum_yaw = atan2(LOADED_TRAVELLER_X,traveller_z-boom_pivot.position.z)
+	minimum_yaw = atan2(LOADED_TRAVELLER_X,traveller_z-HULL.MAST_CENTER_Z)
 	# Find the first solid block approach, not an invented minimum sheet value.
 	var low := 0.0
 	var high := deg_to_rad(25)
 	for iteration in 32:
 		var pitch := (low+high)*.5
+		boom_pivot.position = goose.position+Basis(Vector3.UP,minimum_yaw)*goose.rope_anchor_local()
 		boom_pivot.basis = Basis(Vector3.UP,minimum_yaw)*Basis(Vector3.RIGHT,pitch)
 		var gap := _anchor(aft).distance_to(_anchor(traveller))
 		if gap>.075 and _anchor(aft).y>_anchor(traveller).y: low = pitch
@@ -141,6 +164,9 @@ func _tube(part_name: String, radius: float, length: float, location: Vector3, p
 	mesh.bottom_radius = radius
 	mesh.height = length
 	mesh.radial_segments = 32
+	if part_name=="Boom":
+		mesh.cap_top = false
+		mesh.cap_bottom = false
 	value.mesh = mesh
 	var material := StandardMaterial3D.new()
 	material.albedo_color = Color("95999e")
@@ -158,6 +184,10 @@ func set_opening(value: float, display := true) -> void:
 	opening = clampf(value,0,1)
 	var yaw := lerpf(minimum_yaw,deg_to_rad(175),opening)*side
 	var pitch := lerpf(minimum_pitch,deg_to_rad(-6),smoothstep(0,.30,opening))
+	# The unstayed mast turns with the boom. Yaw belongs at the mast centre;
+	# pitch belongs at the gooseneck axle, not at the middle of the spar.
+	gooseneck.rotation.y = yaw
+	boom_pivot.position = gooseneck.position+Basis(Vector3.UP,yaw)*gooseneck.rope_anchor_local()
 	boom_pivot.basis = Basis(Vector3.UP,yaw)*Basis(Vector3.RIGHT,pitch)
 	traveller.position.x = LOADED_TRAVELLER_X*side
 	traveller_lower.position.x = traveller.position.x
@@ -237,10 +267,38 @@ func set_opening(value: float, display := true) -> void:
 	var starboard := _anchor(get_node("StarboardTravellerEye"))
 	var small := _anchor(traveller_lower)
 	_align_block(traveller_lower,small,starboard,port,Vector3.UP)
-	var line := PackedVector3Array([starboard])
-	_append_wrap(line,small,.0125-minf(HARDWARE.BLOCK_GROOVE_DEPTH,.009*.43*.873)+.0033,starboard,port)
-	line.append_array(PackedVector3Array([port,starboard]))
-	if display: traveller_view.show_path(line)
+	var crossing := _traveller_support(small,port)
+	var traveller_outgoing := crossing[0] if not crossing.is_empty() else port
+	_align_block(traveller_lower,small,starboard,traveller_outgoing,Vector3.UP)
+	traveller_path = PackedVector3Array([starboard])
+	_append_wrap(traveller_path,small,.0125-minf(HARDWARE.BLOCK_GROOVE_DEPTH,.009*.43*.873)+.0033,starboard,traveller_outgoing)
+	traveller_path.append_array(crossing)
+	# Only the loaded upper run clears the tiller. The return stays below it.
+	traveller_path.append(port)
+	traveller_path.append_array(_traveller_support(port,starboard,true))
+	traveller_path.append(starboard)
+	if display: traveller_view.show_path(traveller_path)
+
+func _traveller_support(start: Vector3,finish: Vector3,below := false) -> PackedVector3Array:
+	var result := PackedVector3Array()
+	var z := (start.z+finish.z)*.5
+	var run := (2.171-z)/cos(tiller_angle)
+	var x := -sin(tiller_angle)*run
+	if x<minf(start.x,finish.x) or x>maxf(start.x,finish.x): return result
+	var center := Vector3(x,.310+run*tan(deg_to_rad(2.512)),z)
+	var t := inverse_lerp(start.x,finish.x,x)
+	var side := -1.0 if below else 1.0
+	if (lerpf(start.y,finish.y,t)-center.y)*side>.017: return result
+	# Tension follows the two tangents, not an arbitrary half-circle around
+	# the tube. Only the small contact arc changes direction at the tiller.
+	var tangent_angles := []
+	for endpoint: Vector3 in [start,finish]:
+		var radial := Vector2((endpoint.x-center.x)*cos(tiller_angle),endpoint.y-center.y)
+		tangent_angles.append(radial.angle()+side*signf(radial.x)*acos(clampf(.018/radial.length(),-1,1)))
+	for step in 9:
+		var angle := lerp_angle(tangent_angles[0],tangent_angles[1],step/8.0)
+		result.append(center+Vector3(cos(angle)*.018/cos(tiller_angle),sin(angle)*.018,0))
+	return result
 
 func fit_length(target: float, display := true) -> Dictionary:
 	# The hand-side join is fixed for this solve. Bracket a monotone geometric

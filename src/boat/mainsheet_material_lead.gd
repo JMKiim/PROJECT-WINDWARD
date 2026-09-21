@@ -22,6 +22,8 @@ var floor_bounds := AABB()
 var floor_history := PackedVector3Array()
 var floor_material_rate := 0.0
 var hand_shells := []
+var held_link_bounds := []
+var floor_samples := {}
 
 func set_material_budget(value: float,entry: PackedVector3Array,laid: PackedVector3Array) -> void:
 	cockpit_length = value
@@ -68,6 +70,7 @@ func reset() -> void:
 
 func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshInstance3D,rig_path: PackedVector3Array = PackedVector3Array(),expanded_contacts := false) -> PackedVector3Array:
 	var began := Time.get_ticks_usec()
+	floor_samples.clear()
 	contact_stretch = {"supports":0.0,"self":0.0,"floor":0.0,"pushes":{}}
 	var fixed_count: int = actor.sheet_study.MANUAL_HELD_SEGMENTS+3
 	var fixed := prefix.slice(0,fixed_count)
@@ -150,6 +153,9 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	for support in supports: support_bounds.append(_bounds(support[0],support[1]).grow(support[2]+.004))
 	var collision_fixed := _simplify(fixed,.0001)
 	var fixed_groups := _groups(collision_fixed)
+	held_link_bounds.clear()
+	for index in collision_fixed.size()-1:
+		held_link_bounds.append(_bounds(collision_fixed[index],collision_fixed[index+1]).grow(.010))
 	var remaining := PackedFloat32Array()
 	remaining.resize(collision_fixed.size())
 	for index in range(collision_fixed.size()-2,-1,-1): remaining[index] = remaining[index+1]+collision_fixed[index].distance_to(collision_fixed[index+1])
@@ -165,6 +171,7 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 		for index in range(1,curve.size()-1): changed = maxf(changed,before[index].distance_squared_to(curve[index]))
 		if changed<.000025*.000025: break
 	var contacts_done := Time.get_ticks_usec()
+	_clear_finger_traps(curve,supports,support_bounds)
 	reference_overrun = 0.0
 	var needs_reference := not _within_budget(curve,prior,prior_distances,offset,transported,dt)
 	# A contact-clear candidate already inside the material budget needs no
@@ -179,10 +186,11 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 			var changed := 0.0
 			for index in range(1,retained.size()-1): changed = maxf(changed,before[index].distance_squared_to(retained[index]))
 			if changed<.000025*.000025: break
+		_clear_finger_traps(retained,supports,support_bounds)
 		reference_overrun = maxf(0,_material_step(retained,prior,prior_distances,offset)-FREE_MATERIAL_SPEED*dt)
 	var retained_done := Time.get_ticks_usec()
 	if needs_reference:
-		_bound_material(curve,retained,prior,prior_distances,offset,transported,dt)
+		_bound_material(curve,retained,prior,prior_distances,offset,transported,dt,supports,support_bounds)
 		contact_context = "closure"
 		for sweep in 2:
 			var before := curve.duplicate()
@@ -190,6 +198,7 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 			var changed := 0.0
 			for index in range(1,curve.size()-1): changed = maxf(changed,before[index].distance_squared_to(curve[index]))
 			if changed<.000025*.000025: break
+		_clear_finger_traps(curve,supports,support_bounds)
 	rest_length = _length(curve)
 	last_rest_error = 0.0
 	floor_material_rate = (transported-rest_length)/maxf(dt,.000001)
@@ -203,7 +212,7 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	last_timings = {"prepare_ms":(prepared-began)/1000.0,"retained_ms":(retained_done-contacts_done)/1000.0,"contact_ms":(contacts_done-prepared)/1000.0,"bound_ms":(Time.get_ticks_usec()-retained_done)/1000.0,"reference_used":needs_reference}
 	return full_history
 
-func _bound_material(curve: PackedVector3Array,reference: PackedVector3Array,prior: PackedVector3Array,distances: PackedFloat32Array,offset: float,transported: float,dt: float) -> bool:
+func _bound_material(curve: PackedVector3Array,reference: PackedVector3Array,prior: PackedVector3Array,distances: PackedFloat32Array,offset: float,transported: float,dt: float,supports: Array,support_bounds: Array) -> bool:
 	if _within_budget(curve,prior,distances,offset,transported,dt): return false
 	var candidate := curve.duplicate()
 	var low := 0.0
@@ -213,7 +222,23 @@ func _bound_material(curve: PackedVector3Array,reference: PackedVector3Array,pri
 		for index in range(1,curve.size()-1): curve[index] = reference[index].lerp(candidate[index],fraction)
 		if _within_budget(curve,prior,distances,offset,transported,dt): low = fraction
 		else: high = fraction
-	for index in range(1,curve.size()-1): curve[index] = reference[index].lerp(candidate[index],low)
+	# Clear endpoint routes may lie on opposite sides of a finger. Search
+	# only along the retained route's clear side, never across the obstacle.
+	for attempt in 5:
+		for index in range(1,curve.size()-1): curve[index] = reference[index].lerp(candidate[index],low)
+		if _finger_route_clear(curve,supports,support_bounds): return true
+		low *= .5
+	for index in range(1,curve.size()-1): curve[index] = reference[index]
+	return true
+
+func _finger_route_clear(curve: PackedVector3Array,supports: Array,support_bounds: Array) -> bool:
+	for index in curve.size()-1:
+		var bounds := _bounds(curve[index],curve[index+1])
+		for digit in [3,4,5,6,7,8,9,10,13,14,15,16,17,18,19,20]:
+			if digit>=supports.size() or not bounds.intersects(support_bounds[digit]): continue
+			var support: Array = supports[digit]
+			var near := CONTACT.closest_segments(curve[index],curve[index+1],support[0],support[1])
+			if near[0].distance_to(near[1])<support[2]+.001: return false
 	return true
 
 func _within_budget(curve: PackedVector3Array,prior: PackedVector3Array,distances: PackedFloat32Array,offset: float,transported: float,dt: float) -> bool:
@@ -263,14 +288,20 @@ func _contacts(curve: PackedVector3Array,fixed: PackedVector3Array,fixed_groups:
 			var b := curve[index+1]
 			_project_link(curve,index,support[0],support[1],support[2]+.003)
 			if trace_enabled: _note_push(curve,index,a,b,"support "+str(support_index))
+		var held_search := _bounds(curve[index],curve[index+1])
 		for group: Array in nearby_fixed[index/8]:
 			if not bounds.intersects(group[2]): continue
 			for segment in range(group[0],group[1]):
+				# Most links in an overlapping eight-link group are still far
+				# away. Reject those with the same finite contact radius before
+				# entering the bend solver; refresh after any endpoint movement.
+				if not held_search.intersects(held_link_bounds[segment]): continue
 				var a := curve[index]
 				var b := curve[index+1]
 				_project_free_bend(curve,index,fixed[segment],fixed[segment+1],travelled+remaining[segment+1])
+				if a!=curve[index] or b!=curve[index+1]: held_search = _bounds(curve[index],curve[index+1])
 				if trace_enabled: _note_push(curve,index,a,b,"held "+str(segment))
-		if index>0: curve[index].y = maxf(curve[index].y,hull.cockpit_floor_y_at(curve[index].x,curve[index].z)+.007)
+		if index>0: curve[index].y = maxf(curve[index].y,_floor_height(hull,curve[index])+.007)
 		travelled += curve[index].distance_to(curve[index+1])
 	var supported_length := _length(curve)
 	_clear_free_self_contact(curve)
@@ -280,7 +311,15 @@ func _contacts(curve: PackedVector3Array,fixed: PackedVector3Array,fixed_groups:
 	contact_stretch.self += self_length-supported_length
 	contact_stretch.floor += _length(curve)-self_length
 	for index in range(1,curve.size()-1):
-		curve[index].y = maxf(curve[index].y,hull.cockpit_floor_y_at(curve[index].x,curve[index].z)+.007)
+		curve[index].y = maxf(curve[index].y,_floor_height(hull,curve[index])+.007)
+
+func _floor_height(hull: MeshInstance3D,point: Vector3) -> float:
+	# Contact sweeps change height without changing the floor query's x/z.
+	# Share exact samples only within this build; never quantize positions or
+	# retain a previous frame's hull/support state.
+	var key := Vector2(point.x,point.z)
+	if not floor_samples.has(key): floor_samples[key] = hull.cockpit_floor_y_at(point.x,point.z)
+	return floor_samples[key]
 
 func _note_push(curve: PackedVector3Array,index: int,a: Vector3,b: Vector3,kind: String) -> void:
 	var amount := maxf(a.distance_to(curve[index]),b.distance_to(curve[index+1]))
@@ -389,6 +428,28 @@ func _simplify(path: PackedVector3Array,tolerance: float) -> PackedVector3Array:
 	for index in path.size():
 		if keep[index]: result.append(path[index])
 	return result
+
+func _clear_finger_traps(curve: PackedVector3Array,supports: Array,support_bounds: Array) -> void:
+	# Opposing projections inside overlapping finger capsules can cancel.
+	# Escape only an unresolved contact through the nearest side of that
+	# finger fan, rather than inflating a shell around the entire hand.
+	for first in [3,13]:
+		var base: Vector3 = supports[first][0]
+		var normal: Vector3 = (supports[first+6][0]-base).cross(supports[first][1]-base).normalized()
+		if normal.is_zero_approx(): continue
+		for index in range(1,curve.size()-2):
+			var bounds := _bounds(curve[index],curve[index+1])
+			var trapped := false
+			for digit in range(first,first+8):
+				if not bounds.intersects(support_bounds[digit]): continue
+				var near := CONTACT.closest_segments(curve[index],curve[index+1],supports[digit][0],supports[digit][1])
+				if near[0].distance_to(near[1])<.013: trapped = true
+			if not trapped: continue
+			var axis: Vector3 = normal*signf(((curve[index]+curve[index+1])*.5-base).dot(normal))
+			var plane := -INF
+			for digit in range(first,first+8):
+				plane = maxf(plane,maxf(supports[digit][0].dot(axis),supports[digit][1].dot(axis))+.018)
+			for at in [index,index+1]: curve[at] += axis*maxf(0,plane-curve[at].dot(axis))
 
 func _densify(path: PackedVector3Array,maximum: float) -> PackedVector3Array:
 	var result := PackedVector3Array([path[0]])

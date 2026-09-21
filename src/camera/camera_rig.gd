@@ -161,6 +161,13 @@ func _process(delta: float) -> void:
 
 
 func _sync_first_person_camera() -> void:
+	var seated: Node3D = (target as WindwardBoat).seated_controls
+	if seated!=null:
+		# The camera, hands and deck share the complete boat frame, including
+		# waves. Rotating only the camera by a reduced roll exposes the body.
+		first_person_camera.near = .025
+		first_person_camera.global_transform = seated.gaze_global_transform()
+		return
 	var applied_look := sailor.set_head_look(_look_yaw, _look_pitch)
 	_look_yaw = applied_look.x
 	_look_pitch = applied_look.y
@@ -220,6 +227,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func apply_mouse_look(relative: Vector2) -> void:
+	var seated: Node3D = (target as WindwardBoat).seated_controls
+	if seated!=null:
+		seated.apply_look(relative)
+		return
 	# Kept separate from OS capture state so input direction and anatomical
 	# limits can be regression-tested deterministically in headless builds.
 	_look_yaw = clampf(
@@ -262,6 +273,8 @@ func _top_down_direction() -> Vector3:
 
 
 func _apply_camera_mode() -> void:
+	var seated: Node3D = (target as WindwardBoat).seated_controls
+	if seated!=null: seated.set_first_person(first_person_enabled)
 	_top_down_orbit_dragging = false
 	top_down_camera.current = not first_person_enabled
 	first_person_camera.current = first_person_enabled

@@ -19,6 +19,8 @@ var water_current_velocity := Vector3.ZERO
 var boom_angle_radians := deg_to_rad(38.0)
 var boom_angular_velocity := 0.0
 var water_relative_velocity := Vector3.ZERO
+var fixed_boom_side := 0.0
+var geometric_boom_limit_radians := -1.0
 
 var _boom_side := 1.0
 var _water_velocity_initialized := false
@@ -100,6 +102,13 @@ func boom_angle_degrees() -> float:
 
 
 func _update_boom(delta: float) -> void:
+	# The limited seated scene has an authoritative geometric sheet purchase.
+	# It does not opt into the legacy automatic tack/gybe side switch.
+	if fixed_boom_side!=0 and geometric_boom_limit_radians>=0:
+		_boom_side = signf(fixed_boom_side)
+		boom_angle_radians = _boom_side*geometric_boom_limit_radians
+		boom_angular_velocity = 0
+		return
 	var apparent_wind := apparent_wind_velocity()
 	if apparent_wind.length_squared() > 0.001:
 		var apparent_wind_from := -apparent_wind.normalized()

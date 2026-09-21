@@ -26,3 +26,5 @@ func _process(_delta: float) -> void:
 	)
 	var camera_rig: WindwardCameraRig = boat.get_node("../CameraRig")
 	camera_label.text = "카메라  %s" % ("1인칭" if camera_rig.first_person_enabled else "탑다운")
+	if boat.seated_controls!=null:
+		camera_label.text += "\n"+boat.seated_controls.status_text()

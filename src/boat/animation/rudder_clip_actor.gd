@@ -134,7 +134,14 @@ func set_amount(value: float) -> void:
 				var rest := skeleton.get_bone_rest(bone).basis.get_rotation_quaternion()
 				skeleton.set_bone_pose_rotation(bone, held.slerp(rest, 0.10 * grip_loosen))
 	if look_enabled:
-		var helper: float = SHEET_CONTROL.REGRIP.SOURCE.helper_weight(sheet_control.regrip_time)*sheet_control.weight if sheet_control.regrip_time>=0 else 0.0
+		# The relay clock is not the contact clock. Entry also moves the helper
+		# hand, so looking must use the contact phase actually sampled above.
+		var contact_time: float = sheet_control.regrip.time if sheet_control.continuous_relay else sheet_control.regrip_time
+		var helper: float = SHEET_CONTROL.REGRIP.SOURCE.helper_weight(contact_time)*sheet_control.weight if contact_time>=0 else 0.0
+		# The helper stays in its close working reach for the entire relay,
+		# including the unloaded return; it does not return to the idle arm.
+		if sheet_control.continuous_relay and sheet_control.regrip_time>=0:
+			helper = sheet_control.weight
 		look_pose.apply(skeleton,tiller_hand(),helper)
 		if neck_cap!=null and neck_cap.visible: neck_cap.update_pose()
 

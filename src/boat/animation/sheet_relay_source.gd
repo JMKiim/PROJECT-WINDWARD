@@ -9,6 +9,10 @@ const LOW := Vector3(-.20,.48,.28)
 const ELBOW := Vector3(-.45,.35,.05)
 const HIGH_ELBOW := Vector3(-.72,1.02,.22)
 const HELPER_ELBOW := Vector3(-.30,1.40,1.30)
+## The reach guide seeds the hand frame. Offline authoring then lowers the
+## elbow around that fixed wrist, retaining the shaft grip and wrist cone.
+const HELPER_ELBOW_DIRECTION := Vector3(1,-1,1)
+const HELPER_WRIST_LIMIT_DEGREES := 44.0
 const HELPER_LIFT := Vector3(0,.35,.35)
 const CATCH_FRACTION := .55
 const REGRIP_FRACTION := .35

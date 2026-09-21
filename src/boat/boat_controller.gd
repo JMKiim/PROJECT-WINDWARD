@@ -99,6 +99,8 @@ enum TillerExtensionPairMode {
 }
 
 @export var environment_path: NodePath
+@export var seated_controls_enabled := false
+var seated_controls: Node3D
 @export_range(0.0, 1.0, 0.01) var vang_tension := 0.58
 
 @onready var sail_pivot: Node3D = $SailPivot
@@ -179,6 +181,13 @@ func _ready() -> void:
 	_heave_position = global_position.y
 	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	_sync_sail_clew_to_boom()
+	if seated_controls_enabled:
+		seated_controls = load("res://src/boat/seated_sailing_controls.gd").new()
+		seated_controls.name = "SeatedSailingControls"
+		add_child(seated_controls)
+		if not seated_controls.setup(self):
+			push_error("Seated sailing controls could not be configured")
+			set_physics_process(false)
 
 
 func _physics_process(delta: float) -> void:
@@ -188,6 +197,18 @@ func _physics_process(delta: float) -> void:
 
 	sailing_command.rudder = Input.get_axis("steer_port", "steer_starboard")
 	sailing_command.sheet_delta = Input.get_axis("sheet_in", "sheet_out")
+	if seated_controls!=null:
+		seated_controls.advance_controls(delta,sailing_command.rudder,sailing_command.sheet_delta)
+		if not seated_controls.valid: return
+		_effective_sailing_command.rudder = seated_controls.deck.actor.rudder_angle()/MAX_RUDDER_VISUAL_ANGLE
+		_effective_sailing_command.sheet_delta = 0
+		sailing_state.step(delta,_effective_sailing_command)
+		seated_controls.guard_course()
+		velocity = sailing_state.velocity_vector()
+		velocity.y = 0
+		move_and_slide()
+		_update_water_pose(delta)
+		return
 	# Keep the player command raw for presentation/IK. Sheet-in only changes the
 	# loaded line during the primary pull; the extension hand holds tension while
 	# the primary releases and reaches forward. Sheet-out remains a continuous,
