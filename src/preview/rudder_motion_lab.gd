@@ -2,8 +2,10 @@ extends Node3D
 
 ## Stationary bilateral pose inspection. Side selection is NOT a tack/gybe.
 const ACTOR := preload("res://src/boat/animation/rudder_clip_actor.gd")
+const STERN_DETAILS := preload("res://src/boat/ilca_stern_details.gd")
 const HULL := preload("res://src/boat/ilca_hull.gd")
 const HARDWARE := preload("res://src/boat/ilca_hardware_part.gd")
+const COCKPIT_DETAILS := preload("res://src/boat/ilca_cockpit_details.gd")
 const GRIP := preload("res://src/boat/animation/authored_grip_profile.gd")
 const STROKE := preload("res://src/boat/animation/sheet_stroke_source.gd")
 const STROKE_PLAYER := preload("res://src/boat/animation/sheet_stroke_player.gd")
@@ -11,6 +13,7 @@ const TAIL_SEGMENTS := 10
 const SESSION := preload("res://src/preview/motion_lab_session.gd")
 const CONTROLS := preload("res://src/preview/motion_lab_controls.gd")
 const COMPLETE_SHEET := preload("res://src/preview/training_mainsheet.gd")
+const RIG_INSPECTION := preload("res://src/preview/rig_coupling_lab.gd")
 @export var complete_mainsheet_enabled := false
 @export var irregular_floor_enabled := false
 @export var hiking_sheet_controls_enabled := false
@@ -18,6 +21,7 @@ const COMPLETE_SHEET := preload("res://src/preview/training_mainsheet.gd")
 @export var embedded_controls := false
 @export_range(.50,1.50,.01) var extension_tube_metres := 1.070
 var complete_sheet: Node3D
+var rig_inspection: Node3D
 
 var actor: Node3D
 var camera: Camera3D
@@ -77,6 +81,11 @@ func _ready() -> void:
 		set_process_input(false)
 		set_process_unhandled_key_input(false)
 	set_amount(0.0)
+	if not embedded_controls and complete_sheet!=null:
+		rig_inspection=RIG_INSPECTION.new()
+		rig_inspection.name="RigInspection"
+		add_child(rig_inspection)
+		rig_inspection.setup(self)
 
 
 func _process(delta: float) -> void:
@@ -95,6 +104,7 @@ func _process(delta: float) -> void:
 	# frame's angle. Posture and hand state are evaluated together afterward.
 	session.advance(delta)
 	_refresh_preview()
+	if rig_inspection!=null: rig_inspection.advance()
 	if not is_equal_approx(previous_hike, actor.hike) and selected_view != 3:
 		set_view(selected_view, false)
 	update_ms = float(Time.get_ticks_usec() - started) / 1000.0
@@ -158,7 +168,7 @@ func set_side(side: int) -> void:
 
 
 func set_view(index: int, reset_look: bool = true) -> void:
-	if index < 0 or index > 6:
+	if index < 0 or index > 8:
 		return
 	if reset_look:
 		inspection_yaw = 0.0
@@ -175,6 +185,11 @@ func _set_view_base(index: int, reset_look: bool) -> void:
 	selected_view = index
 	actor.set_first_person(index == 3)
 	camera.near = 0.025 if index >= 3 else 0.04
+	if index>=7:
+		camera.position=Vector3(11,6,-8) if index==7 else Vector3(-1.2,1.1,3.3)
+		camera.look_at(to_global(Vector3(0,3.8,0) if index==7 else Vector3(.08,.34,1.85)),global_basis*Vector3.UP)
+		camera.fov=48
+		return
 	if index == 3:
 		if reset_look:
 			look_pitch = deg_to_rad(20.0)
@@ -247,26 +262,27 @@ func _input(event: InputEvent) -> void:
 			apply_mouse_look(event.screen_relative)
 			get_viewport().set_input_as_handled()
 		return
-	# Labels and panel background do not swallow trim input. Actual selectors
-	# and sliders keep their wheel events, including an open popup.
+	# Visible panels own pointer input; trim remains available over the scene.
+	# Selectors keep their wheel events while their popup is open.
 	if not event is InputEventMouseButton or not event.pressed:
 		return
 	if event.button_index == MOUSE_BUTTON_LEFT:
-		if get_viewport().gui_get_hovered_control() == null:
+		if not controls.pointer_over_ui(event.position) and get_viewport().gui_get_hovered_control() == null:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 			get_viewport().set_input_as_handled()
 		return
 	if event.button_index not in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 		return
+	if Input.mouse_mode!=Input.MOUSE_MODE_CAPTURED and controls.pointer_over_ui(event.position): return
 	if controls.system_select.get_popup().visible or controls.view_select.get_popup().visible: return
 	var hovered: Node = null if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else get_viewport().gui_get_hovered_control()
 	while hovered != null:
-		if hovered is Range or hovered is OptionButton: return
+		if hovered is Range or hovered is OptionButton or hovered is ScrollContainer: return
 		hovered = hovered.get_parent()
 	if not is_finite(event.factor) or event.factor < 0.0:
 		return
 	var notches: float = event.factor if event.factor > 0.0 else 1.0
-	session.input_sheet_wheel(notches if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -notches,event.shift_pressed)
+	session.input_sheet_wheel(notches if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -notches,event.shift_pressed,Time.get_ticks_usec()/1000000.0)
 	get_viewport().set_input_as_handled()
 	controls.refresh()
 
@@ -394,6 +410,9 @@ func _create_lighting() -> void:
 	sun.rotation_degrees = Vector3(-48, -35, 0)
 	sun.light_energy = 0.55
 	sun.shadow_enabled = true
+	# A compact stationary inspection scene needs one stable shadow projection;
+	# perspective split bands were visible across the shallow cockpit moulding.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	sun.directional_shadow_max_distance = 12.0
 	add_child(sun)
 	var fill := DirectionalLight3D.new()
@@ -407,9 +426,11 @@ func _create_deck() -> void:
 	hull.inspection_mast_fit = true
 	hull.name = "Hull"
 	add_child(hull)
-	_hardware(HARDWARE.PartKind.HIKING_STRAP, Vector3(0, 0.075, 0.82), self, {"name": "HikingStrap", "forward_tail_center": Vector3(0, HULL.FORELAND_HEIGHT - 0.070, -0.613), "forward_tail_length": 0.060})
-	_hardware(HARDWARE.PartKind.HIKING_STRAP_PLATE, HULL.STRAP_FRONT_ORIGIN, self, {"name": "HikingStrapForwardPlate"})
 	ratchet = _hardware(HARDWARE.PartKind.DECK_RATCHET, HULL.RATCHET_ORIGIN, self, {"name": "RatchetBlock"})
+	var cockpit_details := COCKPIT_DETAILS.new()
+	cockpit_details.name = "CockpitDetails"
+	add_child(cockpit_details)
+	cockpit_details.setup(hull,ratchet)
 	_hardware(HARDWARE.PartKind.DAGGERBOARD_CASE, Vector3(0, 0.058, -0.155), self, {"name": "DaggerboardCase"})
 	for index in HARDWARE.DECK_LEAD_PREFIX_POINTS - 1:
 		var line := MeshInstance3D.new()
@@ -432,6 +453,10 @@ func _create_deck() -> void:
 	var tiller := _hardware(HARDWARE.PartKind.TILLER, Vector3(0, 0.331476, -0.489529), rudder)
 	tiller.rotation_degrees.x = 2.512
 	_hardware(HARDWARE.PartKind.RUDDER_HEAD, Vector3(0, 0.18, -0.031), rudder)
+	var stern := STERN_DETAILS.new()
+	stern.name = "SternDetails"
+	add_child(stern)
+	stern.setup(rudder)
 	extension = _hardware(HARDWARE.PartKind.TILLER_EXTENSION, Vector3.ZERO, self,{"extension_tube_metres":extension_tube_metres})
 	sheet = MeshInstance3D.new()
 	var rope := CylinderMesh.new()

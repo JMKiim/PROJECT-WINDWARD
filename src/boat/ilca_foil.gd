@@ -54,9 +54,18 @@ func _maximum_allowed_thickness() -> float:
 func _build_foil_mesh() -> ArrayMesh:
 	var foil_mesh := ArrayMesh.new()
 	var rings: Array[PackedVector3Array] = []
-	for station_index in range(SPAN_STATIONS):
-		var span_ratio := float(station_index) / float(SPAN_STATIONS - 1)
+	var stations: Array[float]=[]
+	for station_index in range(SPAN_STATIONS): stations.append(float(station_index)/float(SPAN_STATIONS-1))
+	if foil_kind==FoilKind.RUDDER:
+		# Resolve the one rounded leading corner and its thin moulded lip.
+		for index in range(1,17): stations.append(1.0-RUDDER_CORNER_RADIUS_RATIO*cos(index*PI/32.0))
+		for index in range(1,7): stations.append(1.0-.012/span*index/7.0)
+		stations.sort()
+	var previous_station := -1.0
+	for span_ratio in stations:
+		if absf(span_ratio-previous_station)<.0000001: continue
 		rings.append(_airfoil_ring(span_ratio))
+		previous_station=span_ratio
 
 	# The foil body is one indexed smoothing island.  Root and tip are committed
 	# as a second surface so their normals stay flat instead of rounding over the
@@ -105,6 +114,7 @@ func _airfoil_ring(span_ratio: float) -> PackedVector3Array:
 	# maximum thickness for each foil.
 	for profile_index in range(PROFILE_SEGMENTS + 1):
 		var chord_ratio := float(profile_index) / float(PROFILE_SEGMENTS)
+		if foil_kind==FoilKind.RUDDER: chord_ratio=.5-.5*cos(PI*chord_ratio)
 		ring.append(_profile_point(
 			chord_ratio,
 			1.0,
@@ -115,6 +125,7 @@ func _airfoil_ring(span_ratio: float) -> PackedVector3Array:
 		))
 	for profile_index in range(PROFILE_SEGMENTS - 1, 0, -1):
 		var chord_ratio := float(profile_index) / float(PROFILE_SEGMENTS)
+		if foil_kind==FoilKind.RUDDER: chord_ratio=.5-.5*cos(PI*chord_ratio)
 		ring.append(_profile_point(
 			chord_ratio,
 			-1.0,
@@ -153,21 +164,16 @@ func _centreboard_outline(
 func _rudder_outline(
 	span_ratio: float,
 	blade_chord: float,
-	bottom_chord: float
+	_bottom_chord: float
 ) -> Vector2:
-	# The rudder has a relieved leading shoulder inside the head, then a long
-	# straight trailing edge before the lower R60 region.  This is deliberately
-	# different from the rectangular centreboard silhouette.
+	# The measurement drawing rounds the leading bottom corner only. The 66 mm
+	# annotation is not a tip chord; do not narrow both edges to that value.
 	var shoulder_amount := 1.0 - smoothstep(0.0, 0.18, span_ratio)
-	var round_start := minf(
-		RUDDER_STRAIGHT_TRAILING_EDGE_RATIO,
-		1.0 - RUDDER_CORNER_RADIUS_RATIO
-	)
-	var round_amount := smoothstep(round_start, 1.0, span_ratio)
-	var chord := lerpf(blade_chord, bottom_chord, round_amount)
-	var center := aft_sweep * span_ratio
-	var leading_edge := center - chord * 0.5 + blade_chord * 0.10 * shoulder_amount
-	var trailing_edge := center + chord * 0.5
+	var radius := minf(.060,blade_chord*.4)
+	var corner_y := maxf(0,span*span_ratio-(span-radius))
+	var relief := radius-sqrt(maxf(0,radius*radius-corner_y*corner_y))
+	var leading_edge := -blade_chord*.5+blade_chord*.10*shoulder_amount+relief
+	var trailing_edge := blade_chord*.5
 	return Vector2(leading_edge, trailing_edge)
 
 
@@ -212,6 +218,10 @@ func _naca_half_thickness_shape(chord_ratio: float) -> float:
 
 
 func _span_thickness_factor(span_ratio: float) -> float:
+	if foil_kind==FoilKind.RUDDER:
+		# A narrow moulded edge, not an 11.6 mm thick flat end cap. The full
+		# working section stays unchanged until the last 12 mm.
+		return lerpf(1.0,.08,smoothstep(1.0-.012/span,1.0,span_ratio))
 	# Keep both end rings finite for valid flat caps while softening the moulded
 	# perimeter.  The maximum-thickness contract is reached through the working
 	# middle of the blade.

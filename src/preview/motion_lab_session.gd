@@ -30,11 +30,11 @@ func select_system(value: int) -> void:
 	selected_system = value
 	notice = ""
 
-func input_sheet_wheel(notches: float, coarse := false) -> void:
+func input_sheet_wheel(notches: float, coarse := false,event_seconds := NAN) -> void:
 	if not is_finite(notches) or is_zero_approx(notches): return
 	notice = support_reason()
 	if not notice.is_empty(): return
-	var accepted := wheel_pull.request_wheel(notches,coarse)
+	var accepted := wheel_pull.request_wheel(notches,coarse,event_seconds)
 	if is_zero_approx(accepted):
 		if notches > 0 and wheel_pull.metres >= wheel_pull.maximum_metres-.000001:
 			notice = "Maximum trim reached; wheel up eases immediately."

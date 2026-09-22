@@ -5,9 +5,12 @@ extends Node3D
 const HARDWARE := preload("res://src/boat/ilca_hardware_part.gd")
 const HULL := preload("res://src/boat/ilca_hull.gd")
 const VIEW := preload("res://src/boat/rope_view.gd")
+const END_VIEW := preload("res://src/boat/rope_tube_view.gd")
 const BLOCK := preload("res://src/boat/training_sheave_block.gd")
 const STOPPER := preload("res://src/boat/mainsheet_stopper.gd")
 const JOIN := preload("res://src/boat/mainsheet_deck_join.gd")
+const BOWLINE := preload("res://src/boat/rope_bowline.gd")
+const CURVE := preload("res://src/boat/rope_path_curve.gd")
 const ROPE_RADIUS := .004
 const MAST_BASE_Y := .005
 const LOWER_LENGTH := 2.865
@@ -40,7 +43,7 @@ var minimum_yaw := .0
 var minimum_pitch := .0
 var route := PackedVector3Array()
 var fixed_end := PackedVector3Array()
-var fixed_shape := STOPPER.points(.025,.012)
+var fixed_shape := STOPPER.points(.025,.020)
 var fixed_roll := 0.0
 var fixed_lean := PI/6.0
 var fixed_splay := -PI/6.0
@@ -54,6 +57,17 @@ var becket_winding := 1.0
 var gooseneck: MeshInstance3D
 var tiller_angle := 0.0
 var traveller_path := PackedVector3Array()
+var traveller_link: Node3D
+var traveller_control: Node3D
+var traveller_control_path := PackedVector3Array()
+var traveller_cleat: MeshInstance3D
+var traveller_nipping := PackedVector3Array()
+var traveller_returning := PackedVector3Array()
+var traveller_handle := PackedVector3Array()
+var traveller_rope_key := Vector4(INF,INF,INF,INF)
+var traveller_override := Vector3(NAN,NAN,NAN)
+var traveller_rest := Vector3.ZERO
+var traveller_upper_rest := Vector3.ZERO
 
 func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	hull = floor_mesh
@@ -98,7 +112,7 @@ func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	for sign: int in [-1,1]:
 		var x := TRAVELLER_HALF_SPAN*sign
 		var eye := _part("PortTravellerEye" if sign<0 else "StarboardTravellerEye",HARDWARE.PartKind.TRAVELLER_FAIRLEAD,Vector3(x,hull.deck_y_at(x,traveller_z),traveller_z),self)
-		eye.rotation.y = PI*.5
+		eye.rotation.y = 0
 	traveller = BLOCK.new()
 	traveller.name = "TravellerMainBlock"
 	traveller.part_kind = HARDWARE.PartKind.BOOM_BLOCK
@@ -111,14 +125,40 @@ func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	traveller_lower.sheave_radius = .0125
 	traveller_lower.position = traveller.position-Vector3.UP*.055
 	add_child(traveller_lower)
+	traveller_rest=traveller_lower.position
+	traveller_upper_rest=traveller.position
 	deck_rest = deck._swivel_parts.duplicate()
 	rope_view = VIEW.new()
 	add_child(rope_view)
-	traveller_view = VIEW.new()
+	traveller_view = END_VIEW.new()
 	traveller_view.radius = .003
 	traveller_view.color = Color("253b49")
 	add_child(traveller_view)
-	fixed_view = VIEW.new()
+	traveller_link = END_VIEW.new()
+	traveller_link.radius = .0018
+	traveller_link.color = Color("aab1b5")
+	add_child(traveller_link)
+	traveller_control = END_VIEW.new()
+	traveller_control.radius = .003
+	traveller_control.color = Color("253b49")
+	add_child(traveller_control)
+	traveller_cleat = _part("TravellerCleat",HARDWARE.PartKind.TRAVELLER_CLEAT,Vector3(0,hull.deck_y_at(0,1.465),1.465),self)
+	# A mirrored bowline joins the two return legs. Its full eye is the line
+	# through both fairleads and the lower block, not a separate decorative ring.
+	var tie := Vector3(-.390,0,1.775)
+	var frame := Basis(Vector3.LEFT,Vector3.UP,Vector3.BACK)
+	traveller_nipping=BOWLINE.placed(BOWLINE.nipping(),tie,frame)
+	traveller_returning=BOWLINE.placed(BOWLINE.returning(),tie,frame)
+	var joined := traveller_nipping.duplicate()
+	joined.append_array(traveller_returning)
+	var lift := _deck_lift(joined)
+	for index in traveller_nipping.size(): traveller_nipping[index].y+=lift
+	for index in traveller_returning.size(): traveller_returning[index].y+=lift
+	# Lay the free handle on the aft side deck, outside the tiller's swept area.
+	traveller_handle=BOWLINE.placed(BOWLINE.handle(),Vector3(.390,0,1.615),Basis.IDENTITY)
+	lift=_deck_lift(traveller_handle)
+	for index in traveller_handle.size(): traveller_handle[index].y+=lift
+	fixed_view = END_VIEW.new()
 	add_child(fixed_view)
 	minimum_yaw = atan2(LOADED_TRAVELLER_X,traveller_z-HULL.MAST_CENTER_Z)
 	# Find the first solid block approach, not an invented minimum sheet value.
@@ -184,13 +224,27 @@ func set_opening(value: float, display := true) -> void:
 	opening = clampf(value,0,1)
 	var yaw := lerpf(minimum_yaw,deg_to_rad(175),opening)*side
 	var pitch := lerpf(minimum_pitch,deg_to_rad(-6),smoothstep(0,.30,opening))
+	set_angles(yaw,pitch,display)
+	# Retain the exact legacy control coordinate, not its round-trip inverse.
+	opening = clampf(value,0,1)
+
+func set_angles(yaw: float,pitch: float,display := true) -> void:
+	# The independent-angle boundary uses exactly the same fitted hardware,
+	# wraps and fixed end as the approved one-parameter inspection mode.
+	if not is_finite(yaw) or not is_finite(pitch): return
+	side = -1 if yaw<0 else 1
+	opening = clampf(inverse_lerp(minimum_yaw,deg_to_rad(175),absf(yaw)),0,1)
 	# The unstayed mast turns with the boom. Yaw belongs at the mast centre;
 	# pitch belongs at the gooseneck axle, not at the middle of the spar.
 	gooseneck.rotation.y = yaw
 	boom_pivot.position = gooseneck.position+Basis(Vector3.UP,yaw)*gooseneck.rope_anchor_local()
 	boom_pivot.basis = Basis(Vector3.UP,yaw)*Basis(Vector3.RIGHT,pitch)
-	traveller.position.x = LOADED_TRAVELLER_X*side
-	traveller_lower.position.x = traveller.position.x
+	if traveller_override.is_finite():
+		traveller_lower.position=traveller_override
+		traveller.position=traveller_override+Vector3.UP*.055
+	else:
+		traveller_lower.position=Vector3(LOADED_TRAVELLER_X*side,traveller_rest.y,traveller_rest.z)
+		traveller.position=Vector3(LOADED_TRAVELLER_X*side,traveller_upper_rest.y,traveller_upper_rest.z)
 	var b := _anchor(traveller)
 	var c := _anchor(aft)
 	# The guide datum is the open aperture, not the metal bridge centre.
@@ -263,42 +317,99 @@ func set_opening(value: float, display := true) -> void:
 	if display:
 		rope_view.show_path(route)
 		fixed_view.show_path(fixed_end)
+	_update_traveller(display)
+
+func _update_traveller(display := false) -> void:
+	# The lower sheave datum depends on steering/side, not the boom's trim.
+	# Reuse its rope mesh through the repeated main-sheet length evaluations.
+	var rope_key := Vector4(tiller_angle,traveller_lower.position.x,traveller_lower.position.y,traveller_lower.position.z)
+	if rope_key==traveller_rope_key:
+		if display: _draw_traveller()
+		return
+	traveller_rope_key=rope_key
 	var port := _anchor(get_node("PortTravellerEye"))
 	var starboard := _anchor(get_node("StarboardTravellerEye"))
+	var port_aft := port+Vector3(0,0,.021)
+	var starboard_aft := starboard+Vector3(0,0,.021)
 	var small := _anchor(traveller_lower)
-	_align_block(traveller_lower,small,starboard,port,Vector3.UP)
-	var crossing := _traveller_support(small,port)
-	var traveller_outgoing := crossing[0] if not crossing.is_empty() else port
-	_align_block(traveller_lower,small,starboard,traveller_outgoing,Vector3.UP)
-	traveller_path = PackedVector3Array([starboard])
-	_append_wrap(traveller_path,small,.0125-minf(HARDWARE.BLOCK_GROOVE_DEPTH,.009*.43*.873)+.0033,starboard,traveller_outgoing)
+	_align_block(traveller_lower,small,starboard_aft,port_aft,Vector3.UP)
+	var approaching := _traveller_support(starboard_aft,small)
+	var crossing := _traveller_support(small,port_aft)
+	var traveller_incoming := approaching[-1] if not approaching.is_empty() else starboard_aft
+	var traveller_outgoing := crossing[0] if not crossing.is_empty() else port_aft
+	_align_block(traveller_lower,small,traveller_incoming,traveller_outgoing,Vector3.UP)
+	# One continuous material path between the two free tails: handle, cleat,
+	# nipping turn, large traveller eye, returning strands, collar and short tail.
+	var starboard_front := starboard-Vector3(0,0,.021)
+	var port_front := port-Vector3(0,0,.021)
+	var cleat_entry := traveller_cleat.position+Vector3(0,.020,.020)
+	var cleat_exit := traveller_cleat.position+Vector3(0,.018,-.025)
+	var cleat_approach := traveller_cleat.position+Vector3(0,.018,.060)
+	traveller_path=traveller_handle.duplicate()
+	traveller_path.reverse()
+	traveller_path.append_array(PackedVector3Array([traveller_cleat.position+Vector3(.040,.013,-.080),traveller_cleat.position+Vector3(0,.018,-.070),cleat_exit,cleat_entry,cleat_approach]))
+	traveller_path.append_array(traveller_nipping)
+	traveller_path.append_array(_traveller_support(traveller_nipping[-1],starboard_front,true))
+	traveller_path.append_array(PackedVector3Array([starboard_front,starboard,starboard_aft]))
+	traveller_path.append_array(approaching)
+	_append_wrap(traveller_path,small,.0125-minf(HARDWARE.BLOCK_GROOVE_DEPTH,.009*.43*.873)+.0033,traveller_incoming,traveller_outgoing)
 	traveller_path.append_array(crossing)
-	# Only the loaded upper run clears the tiller. The return stays below it.
-	traveller_path.append(port)
-	traveller_path.append_array(_traveller_support(port,starboard,true))
-	traveller_path.append(starboard)
-	if display: traveller_view.show_path(traveller_path)
+	traveller_path.append_array(PackedVector3Array([port_aft,port,port_front]))
+	traveller_path.append_array(traveller_returning)
+	traveller_path=CURVE.round_corners(traveller_path,.012)
+	traveller_control_path=PackedVector3Array()
+	if display: _draw_traveller()
+
+func _draw_traveller() -> void:
+	traveller_view.show_path(traveller_path)
+	traveller_control.show_path(traveller_control_path)
+	var upper := _anchor(traveller,&"attachment")
+	var lower := _anchor(traveller_lower,&"attachment")
+	var center := (upper+lower)*.5
+	var link := PackedVector3Array()
+	var axis := (global_basis.inverse()*traveller.global_basis.x).normalized()
+	for index in 33:
+		var angle := TAU*index/32.0
+		var separation := (upper-lower)*.5
+		link.append(center+separation*cos(angle)+axis*sin(angle)*.006)
+	traveller_link.show_path(link)
+
+func _deck_lift(points: PackedVector3Array) -> float:
+	# Rigid support keeps the knot's crossings intact instead of flattening its
+	# centreline independently at each deck sample.
+	var lift := -INF
+	for point in points: lift=maxf(lift,hull.deck_y_at(point.x,point.z)+.0033-point.y)
+	return lift
 
 func _traveller_support(start: Vector3,finish: Vector3,below := false) -> PackedVector3Array:
 	var result := PackedVector3Array()
-	var z := (start.z+finish.z)*.5
-	var run := (2.171-z)/cos(tiller_angle)
-	var x := -sin(tiller_angle)*run
-	if x<minf(start.x,finish.x) or x>maxf(start.x,finish.x): return result
-	var center := Vector3(x,.310+run*tan(deg_to_rad(2.512)),z)
-	var t := inverse_lerp(start.x,finish.x,x)
+	# Solve in the inclined tube's perpendicular plane. A world-Z slice is
+	# not perpendicular to a steered tiller and cuts the tube at full steering.
+	var frame := traveller_tiller_frame()
+	var a := frame.affine_inverse()*start
+	var b := frame.affine_inverse()*finish
+	var radial_a := Vector2(a.x,a.y)
+	var radial_b := Vector2(b.x,b.y)
+	var radius := .0161 # 12.8 mm wear plate + 3 mm rope + surface allowance.
+	if Geometry2D.get_closest_point_to_segment(Vector2.ZERO,radial_a,radial_b).length()>=radius: return result
+	if minf(a.z,b.z)>.490 or maxf(a.z,b.z)<-.490: return result
 	var side := -1.0 if below else 1.0
-	if (lerpf(start.y,finish.y,t)-center.y)*side>.017: return result
-	# Tension follows the two tangents, not an arbitrary half-circle around
-	# the tube. Only the small contact arc changes direction at the tiller.
 	var tangent_angles := []
-	for endpoint: Vector3 in [start,finish]:
-		var radial := Vector2((endpoint.x-center.x)*cos(tiller_angle),endpoint.y-center.y)
-		tangent_angles.append(radial.angle()+side*signf(radial.x)*acos(clampf(.018/radial.length(),-1,1)))
+	for radial: Vector2 in [radial_a,radial_b]:
+		tangent_angles.append(radial.angle()+side*signf(radial.x)*acos(clampf(radius/radial.length(),-1,1)))
+	var arc := absf(angle_difference(tangent_angles[0],tangent_angles[1]))*radius
+	var lead := sqrt(maxf(0,radial_a.length_squared()-radius*radius))
+	var exit_length := sqrt(maxf(0,radial_b.length_squared()-radius*radius))
+	var total := lead+arc+exit_length
 	for step in 9:
 		var angle := lerp_angle(tangent_angles[0],tangent_angles[1],step/8.0)
-		result.append(center+Vector3(cos(angle)*.018/cos(tiller_angle),sin(angle)*.018,0))
+		var z := lerpf(a.z,b.z,(lead+arc*step/8.0)/total)
+		result.append(frame*Vector3(cos(angle)*radius,sin(angle)*radius,z))
 	return result
+
+func traveller_tiller_frame() -> Transform3D:
+	var yaw := Basis(Vector3.UP,tiller_angle)
+	return Transform3D(yaw*Basis(Vector3.RIGHT,deg_to_rad(2.512)),Vector3(0,0,2.171)+yaw*Vector3(0,.331476,-.489529))
 
 func fit_length(target: float, display := true) -> Dictionary:
 	# The hand-side join is fixed for this solve. Bracket a monotone geometric

@@ -119,11 +119,15 @@ static func _repair_slivers(data: Array, outlines: Array, projection := Transfor
 			for corner in 3:
 				var candidate := indices[other + corner]
 				if ids[candidate] != ids[s] and ids[candidate] != ids[t]: b = candidate
-			if b < 0 or absf((vertices[b] - vertices[a]).dot(normal)) > 0.00001: continue
+			# A clipped sliver may straddle two gently curved parent triangles.
+			# A diagonal swap moves no vertices and preserves every boundary;
+			# bound its out-of-plane deviation to 25 micrometres (well below the
+			# existing short-edge weld budget), instead of requiring coplanarity.
+			if b < 0 or absf((vertices[b] - vertices[a]).dot(normal)) > 0.000025: continue
 			var cross0 := (vertices[s] - vertices[a]).cross(vertices[b] - vertices[a])
 			var cross1 := (vertices[b] - vertices[a]).cross(vertices[t] - vertices[a])
 			if minf(cross0.length_squared(), cross1.length_squared()) <= 1e-14: continue
-			if cross0.normalized().dot(normal) < 0.999 or cross1.normalized().dot(normal) < 0.999: continue
+			if cross0.normalized().dot(normal) < 0.995 or cross1.normalized().dot(normal) < 0.995: continue
 			_register_edges(edges, ids, indices, face, false)
 			_register_edges(edges, ids, indices, other, false)
 			indices[face] = a

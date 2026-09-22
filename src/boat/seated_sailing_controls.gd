@@ -16,7 +16,7 @@ func setup(value: Node3D) -> bool:
 	# Keep the old scene intact but inactive, including its unfinished maneuvers.
 	for child in boat.get_children():
 		if child==self or child is CollisionShape3D: continue
-		if child.name in ["Daggerboard","DaggerboardHead","DaggerboardHandle","UpperRudderGudgeon","LowerRudderGudgeon"]: continue
+		if child.name in ["Daggerboard","DaggerboardHead","DaggerboardHandle"]: continue
 		child.process_mode = Node.PROCESS_MODE_DISABLED
 		if child is Node3D: child.visible = false
 	deck = DECK.instantiate()
@@ -25,12 +25,10 @@ func setup(value: Node3D) -> bool:
 	add_child(deck)
 	if deck.complete_sheet==null or not deck.complete_sheet.configured: return false
 	var rig: Node3D = deck.complete_sheet.rig
-	# Reuse the existing foil, sail, marks and clew; the obsolete boom and ropes
+	# Reuse the existing sail, marks and clew; the obsolete boom and ropes
 	# remain hidden, so there cannot be two competing trim representations.
-	var blade: Node3D = boat.get_node("RudderPivot/RudderBladePivot")
-	blade.reparent(deck.rudder,false)
-	blade.process_mode = Node.PROCESS_MODE_INHERIT
-	blade.visible = true
+	# The shared deck owns its complete rudder. Keep the legacy foil hidden,
+	# rather than grafting a second blade onto the inspection assembly.
 	boat.clew_strap.reparent(rig.boom_pivot,false)
 	boat.clew_strap.process_mode = Node.PROCESS_MODE_INHERIT
 	boat.clew_strap.visible = true
@@ -109,7 +107,7 @@ func _input(event: InputEvent) -> void:
 		if event.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN]:
 			if not is_finite(event.factor) or event.factor<0: return
 			var amount: float = event.factor if event.factor>0 else 1.0
-			deck.session.input_sheet_wheel(amount if event.button_index==MOUSE_BUTTON_WHEEL_DOWN else -amount,event.shift_pressed)
+			deck.session.input_sheet_wheel(amount if event.button_index==MOUSE_BUTTON_WHEEL_DOWN else -amount,event.shift_pressed,Time.get_ticks_usec()/1000000.0)
 			get_viewport().set_input_as_handled()
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.physical_keycode==KEY_SPACE:

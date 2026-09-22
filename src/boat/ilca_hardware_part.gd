@@ -103,7 +103,7 @@ func rope_anchor_local(anchor_name: StringName = &"sheave") -> Vector3:
 		PartKind.BOOM_END_FITTING:
 			return Vector3(0.0, 0.025, -0.012)
 		PartKind.TRAVELLER_FAIRLEAD:
-			return Vector3(0.0, 0.030, 0.0)
+			return Vector3(0.0, 0.025, 0.0)
 		PartKind.TRAVELLER_CLEAT:
 			return Vector3(0.0, 0.028, -0.008)
 		PartKind.GOOSENECK:
@@ -850,24 +850,37 @@ func _build_boom_end_fitting() -> void:
 
 func _build_rudder_head() -> void:
 	var cheek_profile := PackedVector2Array([
-		Vector2(-0.115, -0.115), Vector2(0.090, -0.115),
-		Vector2(0.115, -0.070), Vector2(0.105, 0.095),
-		Vector2(0.055, 0.125), Vector2(-0.095, 0.110),
+		Vector2(.028,-.132),Vector2(.172,-.132),Vector2(.210,-.116),
+		Vector2(.238,-.081),Vector2(.239,.090),Vector2(.205,.124),
+		Vector2(.039,.141),Vector2(.024,.118),Vector2(.026,.044),
 	])
-	# Two genuinely separate aluminium cheeks leave the blade gap visible at
-	# first-person distance. The old solid 44 mm extrusion read as one black box.
+	# The blade bolt shares the foil pivot: (0,.155,.065) in rudder space.
+	# The head origin is (0,.180,-.031). Keep the tiller/hand datum unchanged.
+	var anodised := _material(Color("666e73"),.40,.72)
 	for side in [-1.0, 1.0]:
-		var cheek := _add_extruded_profile(
+		_add_profile_part(
 			"PortCheek" if side < 0.0 else "StarboardCheek",
 			cheek_profile,
-			0.006,
-			_black
+			.003,
+			Vector3(side*.0135,0,0),
+			anodised,.001
 		)
-		cheek.position.x = side * 0.022
-	_add_cylinder("BladeBolt", 0.052, 0.012, Vector3(0.0, -0.025, 0.025), _stainless, Vector3(0.0, 0.0, PI * 0.5))
-	_add_cylinder("UpperSpacingPin", 0.052, 0.006, Vector3(0.0, 0.078, -0.045), _stainless, Vector3(0.0, 0.0, PI * 0.5))
-	_add_cylinder("LowerSpacingPin", 0.052, 0.006, Vector3(0.0, -0.078, -0.065), _stainless, Vector3(0.0, 0.0, PI * 0.5))
-	_add_cylinder("DownhaulHole", 0.054, 0.007, Vector3(0.0, -0.070, 0.070), _soft_black, Vector3(0.0, 0.0, PI * 0.5))
+		_add_cylinder("BladeWasher",.0015,.0095,Vector3(side*.016,-.025,.096),_white,Vector3(0,0,PI*.5))
+		var nut := _add_cylinder("BladeBoltHead" if side<0 else "BladeLocknut",.005,.008,Vector3(side*.019,-.025,.096),_stainless,Vector3(0,0,PI*.5))
+		nut.mesh.radial_segments = 6
+	_add_cylinder("BladeBolt",.045,.0047625,Vector3(0,-.025,.096),_stainless,Vector3(0,0,PI*.5))
+	for y: float in [.059,-.061]:
+		# Pintles rotate inside the fixed gudgeons, on the steering axis.
+		_add_cylinder("Pintle",.044,.0042,Vector3(0,y-.019,.031),_stainless)
+		# Open U-shaped bridge leaves the downhaul passage behind the pintle.
+		_add_box("PintleBridge",Vector3(.038,.005,.013),Vector3(0,y+.005,.031),_stainless)
+		for side: float in [-1.0,1.0]:
+			_add_box("PintleBridgeArm",Vector3(.005,.005,.036),Vector3(side*.0165,y+.005,.0555),_stainless)
+		for side: float in [-1.0,1.0]:
+			_add_box("PintleStrap",Vector3(.002,.017,.076),Vector3(side*.017,y+.005,.076),_stainless)
+			for z: float in [.063,.105]: _add_cylinder("PintleRivet",.003,.0032,Vector3(side*.019,y+.005,z),_stainless,Vector3(0,0,PI*.5))
+	_add_box("TillerHeelSeat",Vector3(.030,.013,.068),Vector3(0,.129,.060),_black)
+	_add_cylinder("TillerRetainingPin",.039,.0028,Vector3(0,.137,.050),_stainless,Vector3(0,0,PI*.5))
 
 
 func _build_tiller() -> void:
@@ -877,6 +890,26 @@ func _build_tiller() -> void:
 	_add_tube_between("CarbonTiller", Vector3(0.0, 0.0, -0.490), Vector3(0.0, 0.0, 0.490), 0.012, _soft_black)
 	_add_box("HeadSocket", Vector3(0.034, 0.029, 0.090), Vector3(0.0, 0.0, 0.440), _black)
 	_add_box("ExtensionBase", Vector3(0.030, 0.026, 0.075), Vector3(0.0, 0.0, -0.450), _rubber)
+	# Thin wrap-around wear plate under the traveller, with the original
+	# tiller/extension centreline and hand datum unchanged.
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for index in 32:
+		var a := lerpf(deg_to_rad(-105),deg_to_rad(105),index/32.0)
+		var b := lerpf(deg_to_rad(-105),deg_to_rad(105),(index+1)/32.0)
+		var p := Vector3(sin(a),cos(a),0)
+		var q := Vector3(sin(b),cos(b),0)
+		_surface_quad(surface,p*.0128+Vector3(0,0,.080),q*.0128+Vector3(0,0,.080),q*.0128+Vector3(0,0,.280),p*.0128+Vector3(0,0,.280),(p+q).normalized())
+	var plate := MeshInstance3D.new()
+	plate.name="TravellerWearPlate"
+	plate.mesh=surface.commit()
+	plate.material_override=_stainless
+	add_child(plate)
+	var cleat := _add_box("RudderDownhaulCleatBase",Vector3(.006,.012,.055),Vector3(-.016,0,.335),_black)
+	for side: float in [-1.0,1.0]:
+		_add_box("DownhaulCleatLip",Vector3(.006,.003,.045),cleat.position+Vector3(-.004,side*.006,0),_soft_black)
+		for index in 7:
+			_add_tube_between("DownhaulTooth",cleat.position+Vector3(-.003,side*.004,-.018+index*.005),cleat.position+Vector3(-.007,side*.002,-.015+index*.005),.00065,_black)
 
 
 func _build_tiller_extension() -> void:
@@ -926,36 +959,58 @@ func set_tiller_extension_grip_distance(distance: float) -> void:
 
 
 func _build_traveller_fairlead() -> void:
-	_add_box("PlasticBase", Vector3(0.072, 0.010, 0.042), Vector3.ZERO, _black)
-	_add_tube_between("PortLeg", Vector3(-0.023, 0.006, 0.0), Vector3(-0.023, 0.030, 0.0), 0.006, _black)
-	_add_tube_between("Bridge", Vector3(-0.023, 0.030, 0.0), Vector3(0.023, 0.030, 0.0), 0.006, _black)
-	_add_tube_between("StarboardLeg", Vector3(0.023, 0.030, 0.0), Vector3(0.023, 0.006, 0.0), 0.006, _black)
+	_add_box("PlasticBase",Vector3(.072,.005,.021),Vector3(0,.0025,0),_black)
+	# Rounded open bridge with two real fasteners; keep the established lead
+	# datum so this housing change does not alter the mainsheet trim range.
+	for index in 24:
+		var a := PI*index/24.0
+		var b := PI*(index+1)/24.0
+		_add_tube_between("FairleadArch",Vector3(cos(a)*.025,.008+sin(a)*.027,0),Vector3(cos(b)*.025,.008+sin(b)*.027,0),.0045,_black)
+	for x: float in [-.030,.030]: _fitting_screw("FairleadScrew",Vector3(x,.006,0),Vector3.UP)
 
 
 func _build_traveller_cleat() -> void:
-	_add_box("ClamBase", Vector3(0.062, 0.010, 0.072), Vector3.ZERO, _black)
-	for side in [-1.0, 1.0]:
-		_add_box(
-			"PortJaw" if side < 0.0 else "StarboardJaw",
-			Vector3(0.018, 0.034, 0.058),
-			Vector3(side * 0.014, 0.022, -0.006),
-			_black,
-			Vector3(0.0, side * deg_to_rad(10.0), side * deg_to_rad(-7.0))
-		)
-	_add_tube_between("Guide", Vector3(-0.029, 0.036, 0.026), Vector3(0.029, 0.036, 0.026), 0.004, _black)
+	_add_box("ClamBase",Vector3(.025,.004,.080),Vector3(0,.002,0),_black)
+	var jaw := PackedVector2Array([Vector2(-.029,.004),Vector2(.029,.004),Vector2(.025,.026),Vector2(-.023,.019)])
+	for side: float in [-1.0,1.0]:
+		_add_profile_part("PortJaw" if side<0 else "StarboardJaw",jaw,.007,Vector3(side*.007,0,0),_black,.0005)
+		for index in 9:
+			_add_tube_between("GripTooth",Vector3(side*.0033,.006,-.019+index*.0047),Vector3(side*.006,.021,-.017+index*.0047),.0007,_soft_black)
+	for z: float in [-.033,.033]: _fitting_screw("CleatScrew",Vector3(0,.005,z),Vector3.UP)
 
 
 func _build_rudder_gudgeon() -> void:
-	_add_box("TransomPlate", Vector3(0.105, 0.070, 0.008), Vector3(0.0, 0.0, 0.0), _stainless)
-	for side in [-1.0, 1.0]:
-		_add_box(
-			"PortEar" if side < 0.0 else "StarboardEar",
-			Vector3(0.020, 0.040, 0.055),
-			Vector3(side * 0.031, 0.0, 0.028),
-			_stainless
-		)
-	_add_cylinder("PintleBarrel", 0.052, 0.009, Vector3(0.0, 0.0, 0.052), _stainless)
-	_add_cylinder("PintleOpening", 0.054, 0.004, Vector3(0.0, 0.0, 0.052), _soft_black)
+	_add_box("TransomPlate",Vector3(.105,.022,.007),Vector3.ZERO,_black)
+	for side: float in [-1.0,1.0]:
+		_add_tube_between("MouldedArm",Vector3(side*.015,0,.006),Vector3(side*.007,0,.052),.006,_black)
+		for x: float in [.027,.044]: _fitting_screw("GudgeonScrew",Vector3(side*x,0,.0045),Vector3.BACK)
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for index in 32:
+		var a := TAU*index/32.0
+		var b := TAU*(index+1)/32.0
+		var radial_a := Vector3(cos(a),0,sin(a))
+		var radial_b := Vector3(cos(b),0,sin(b))
+		var centre := Vector3.ZERO
+		for radius: float in [.005,.011]:
+			_surface_quad(surface,centre+radial_a*radius+Vector3.UP*.010,centre+radial_b*radius+Vector3.UP*.010,centre+radial_b*radius-Vector3.UP*.010,centre+radial_a*radius-Vector3.UP*.010,radial_a*(-1 if radius<.006 else 1))
+		for sign_y: float in [-1.0,1.0]:
+			var p := centre+Vector3.UP*.010*sign_y
+			_surface_quad(surface,p+radial_a*.005,p+radial_b*.005,p+radial_b*.011,p+radial_a*.011,Vector3.UP*sign_y)
+	surface.index()
+	var barrel := MeshInstance3D.new()
+	barrel.name = "PintleBarrel"
+	barrel.position = Vector3(0,0,.052)
+	barrel.mesh = surface.commit()
+	barrel.material_override = _black
+	add_child(barrel)
+
+func _fitting_screw(label: String,point: Vector3,normal: Vector3) -> void:
+	var head := _add_cylinder(label,.0015,.0035,point,_stainless)
+	head.basis = Basis(Quaternion(Vector3.UP,normal))
+	for turn in 2:
+		var slot := _add_box("CrossRecess",Vector3(.0042,.0001,.0007),Vector3.ZERO,_soft_black)
+		slot.transform = head.transform*Transform3D(Basis(Vector3.UP,turn*PI*.5),Vector3(0,.0008,0))
 
 
 func _capsule_outline(half_length: float, half_width: float) -> PackedVector2Array:

@@ -1,134 +1,177 @@
 extends RefCounted
 
-const SESSION := preload("res://src/preview/motion_lab_session.gd")
 var lab: Node3D
 var system_select: OptionButton
 var view_select: OptionButton
 var follow_button: CheckButton
 var support: Label
 var input_hint: Label
+var rig_column: VBoxContainer
+var drawer: PanelContainer
+var advanced_column: VBoxContainer
+var drawer_scroll: ScrollContainer
+var summary: Label
+var toolbar: PanelContainer
 
 func build(value: Node3D) -> void:
-	lab = value
+	lab=value
 	var layer := CanvasLayer.new()
-	layer.name = "LabUI"
+	layer.name="LabUI"
 	lab.add_child(layer)
 	var panel := PanelContainer.new()
+	toolbar=panel
+	panel.name="Toolbar"
 	panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	panel.offset_left = 12
-	panel.offset_right = -12
-	panel.offset_top = 12
-	var theme := Theme.new()
-	theme.default_font_size = 18
-	panel.theme = theme
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.07, 0.10, 0.135, 0.94)
-	panel.add_theme_stylebox_override("panel", style)
+	panel.offset_left=12
+	panel.offset_right=-12
+	panel.offset_top=12
+	_style(panel)
 	layer.add_child(panel)
 	var stack := VBoxContainer.new()
-	stack.add_theme_constant_override("separation", 6)
 	panel.add_child(stack)
-	lab.main_title = _label("WINDWARD / MANUAL CONTROLS", stack)
-	lab.main_title.add_theme_font_size_override("font_size", 24)
 	var row := _row(stack)
-	system_select = OptionButton.new()
-	system_select.focus_mode = Control.FOCUS_NONE
-	for title in SESSION.SYSTEM_NAMES: system_select.add_item(title)
+	lab.main_title=_label("WINDWARD",row)
+	lab.main_title.add_theme_font_size_override("font_size",20)
+	system_select=OptionButton.new()
+	system_select.focus_mode=Control.FOCUS_NONE
+	for title in ["1 메인시트","2 붐뱅 (준비 중)","3 커닝험 (준비 중)","4 아웃홀 (준비 중)"]: system_select.add_item(title)
 	system_select.item_selected.connect(lab.select_system)
 	row.add_child(system_select)
-	_label("Wheel down/up: haul/ease | Shift: coarse | A/D: rudder", row)
-	_button("Reset trim [R]", lab.reset_action, row)
-	_button("Reset setup", lab.reset_scenario, row)
-	row = _row(stack)
-	_label("Rudder A/D", row)
-	_button("Neutral [S]", func(): lab._stop_and_set(0.0), row)
-	lab.slider = _slider(-1, 1, 0.002, lab._stop_and_set, row)
-	_label("Hike Z/X", row)
-	lab.hike_slider = _slider(0, 1, 0.01, lab._request_hike, row)
-	_button("Switch side [8]", func(): lab.set_side(-lab.actor.seat_side), row)
-	row = _row(stack)
-	view_select = OptionButton.new()
-	view_select.focus_mode = Control.FOCUS_NONE
-	for title in ["3/4 [F1]", "Front [F2]", "Top [F3]", "First person [F4]", "Sheet hand [F5]", "Tiller hand [F6]", "Upper arm [F7]"]: view_select.add_item(title)
+	view_select=OptionButton.new()
+	view_select.focus_mode=Control.FOCUS_NONE
+	for title in ["사선 [F1]","정면 [F2]","위 [F3]","1인칭 [F4]","시트 손 [F5]","러더 손 [F6]","팔 [F7]","전체 리그","선미 확대"]: view_select.add_item(title)
 	view_select.item_selected.connect(lab.set_view)
 	row.add_child(view_select)
-	follow_button = CheckButton.new()
-	follow_button.focus_mode = Control.FOCUS_NONE
-	follow_button.text = "Look at hands"
+	_button("트림 리셋 [R]",lab.reset_action,row)
+	_button("리깅",func(): show_drawer("rig"),row)
+	_button("상세",func(): show_drawer("advanced"),row)
+	summary=_label("",row)
+	summary.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	summary.horizontal_alignment=HORIZONTAL_ALIGNMENT_RIGHT
+	input_hint=_label("휠↓ 당기기 / ↑ 풀기 · A/D 러더 · Z/X 하이크 · 클릭 시선 / Esc 커서 · H 화면 숨김",stack)
+	input_hint.mouse_filter=Control.MOUSE_FILTER_IGNORE
+	input_hint.add_theme_font_size_override("font_size",15)
+	drawer=PanelContainer.new()
+	drawer.name="InspectionDrawer"
+	drawer.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	drawer.position=Vector2(12,104)
+	drawer.size=Vector2(490,540)
+	_style(drawer)
+	layer.add_child(drawer)
+	drawer_scroll=ScrollContainer.new()
+	drawer_scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED
+	drawer.add_child(drawer_scroll)
+	var content := VBoxContainer.new()
+	content.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	drawer_scroll.add_child(content)
+	_button("닫기",func(): drawer.hide(),content)
+	rig_column=VBoxContainer.new()
+	content.add_child(rig_column)
+	advanced_column=VBoxContainer.new()
+	content.add_child(advanced_column)
+	_label("자세 / 조작 상세",advanced_column)
+	row=_row(advanced_column)
+	_label("러더 A/D",row)
+	lab.slider=_slider(-1,1,.002,lab._stop_and_set,row)
+	_button("중립 [S]",func(): lab._stop_and_set(0.0),row)
+	row=_row(advanced_column)
+	_label("하이크 Z/X",row)
+	lab.hike_slider=_slider(0,1,.01,lab._request_hike,row)
+	_button("좌우 [8]",func(): lab.set_side(-lab.actor.seat_side),row)
+	follow_button=CheckButton.new()
+	follow_button.text="1인칭에서 손 쪽 보기"
+	follow_button.focus_mode=Control.FOCUS_NONE
 	follow_button.toggled.connect(lab.set_follow_work)
-	row.add_child(follow_button)
-	_button("Reset view", lab.reset_view, row)
-	_button("Copy setup", func(): DisplayServer.clipboard_set(JSON.stringify(lab.inspection_snapshot(), "\t")), row)
-	support = _label("", stack)
-	lab.status = _label("", stack)
-	lab.sheet_status = _label("", stack)
-	for label in [support, lab.status, lab.sheet_status]: label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	lab.mode_hint = _label("1-4: rope | A/D + S: rudder | Z/X: hike | F1-F7: views | Click: mouse look | Esc: cursor | H: panel", stack)
-	lab.mode_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	var hint_layer := CanvasLayer.new()
-	hint_layer.name = "LabInputHint"
-	lab.add_child(hint_layer)
-	input_hint = Label.new()
-	input_hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	input_hint.offset_left = 24
-	input_hint.offset_right = -24
-	input_hint.offset_top = -70
-	input_hint.offset_bottom = -10
-	input_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	input_hint.add_theme_font_size_override("font_size", 20)
-	input_hint.add_theme_color_override("font_color", Color("f0cf87"))
-	input_hint.add_theme_color_override("font_shadow_color", Color.BLACK)
-	input_hint.add_theme_constant_override("shadow_offset_x", 2)
-	input_hint.add_theme_constant_override("shadow_offset_y", 2)
-	hint_layer.add_child(input_hint)
+	advanced_column.add_child(follow_button)
+	row=_row(advanced_column)
+	_button("시야 초기화",lab.reset_view,row)
+	_button("전체 초기화",lab.reset_scenario,row)
+	_button("설정 복사",func(): DisplayServer.clipboard_set(JSON.stringify(lab.inspection_snapshot(),"\t")),row)
+	support=_label("",advanced_column)
+	lab.status=_label("",advanced_column)
+	lab.sheet_status=_label("",advanced_column)
+	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.",advanced_column)
+	for label in [support,lab.status,lab.sheet_status,lab.mode_hint]: label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
+	drawer.hide()
+	lab.get_viewport().size_changed.connect(_resize)
+	_resize()
+
+func _resize() -> void:
+	var height: float=lab.get_viewport().get_visible_rect().size.y
+	drawer.size.y=maxf(200,minf(590,height-120))
+
+func pointer_over_ui(point: Vector2) -> bool:
+	# Input callbacks run before GUI delivery. Use visible panel bounds instead
+	# of relying on the previous frame's hovered control during a fast click.
+	for panel in [toolbar,drawer]:
+		if panel.is_visible_in_tree() and panel.get_global_rect().has_point(point): return true
+	return false
+
+func show_drawer(kind: String) -> void:
+	var same := (kind=="rig" and rig_column.visible) or (kind=="advanced" and advanced_column.visible)
+	if drawer.visible and same:
+		drawer.hide()
+		return
+	rig_column.visible=kind=="rig"
+	advanced_column.visible=kind=="advanced"
+	drawer_scroll.scroll_vertical=0
+	drawer.show()
 
 func refresh() -> void:
-	var session = lab.session
+	var session=lab.session
 	system_select.select(session.selected_system)
 	view_select.select(lab.selected_view)
 	follow_button.set_pressed_no_signal(lab.follow_work_area)
 	lab.hike_slider.set_value_no_signal(session.requested_hike)
 	lab.slider.set_value_no_signal(lab.actor.amount)
-	var reason: String = session.support_reason()
-	support.text = "READY" if reason.is_empty() else reason
-	if not session.notice.is_empty(): support.text += " | " + session.notice
-	support.add_theme_color_override("font_color", Color("a7dbbb") if reason.is_empty() else Color("efc181"))
-	var input = session.wheel_pull
-	var repeat_status := "distance driven" if input.motion!=null else "not ready"
-	lab.sheet_status.text = "%s | Trim %.1f / target %.1f mm | Range %.0f-%.0f mm | Idle %.2fs: return hands, keep trim | Repeated handover: %s" % [input.state, input.metres * 1000, input.target_metres * 1000, input.minimum_metres*1000, input.maximum_metres*1000, input.IDLE_SECONDS,repeat_status]
+	var reason: String=session.support_reason()
+	support.text="조작 가능" if reason.is_empty() else reason
+	if not session.notice.is_empty(): support.text+="\n"+session.notice
+	var input=session.wheel_pull
+	var state := "대기" if input.state=="REST" else ("풀기" if "EASE" in input.state else "손 동작")
+	summary.text="%s · 회수 %.2f m" % [state,input.metres]
+	if not reason.is_empty(): summary.text="선택 동작 미지원 · 상세 확인"
+	lab.sheet_status.text="트림 %.3f / 목표 %.3f m\n범위 %.3f~%.3f m · %s" % [input.metres,input.target_metres,input.minimum_metres,input.maximum_metres,input.state]
 	if input.length_budget!=null:
-		lab.sheet_status.text += " | Total %.2fm / Rig %.2fm / Cockpit %.2fm / Ends %.2fm" % [input.length_budget.total_metres,input.length_budget.rig_metres,input.length_budget.cockpit_metres,input.length_budget.fixed_end_metres+input.length_budget.free_end_metres]
-	input_hint.text = "%s | Wheel: fine; spin faster: more trim / Shift: coarse | A/D: rudder | Z/X: hike | F4: first person | Click: look / Esc: cursor | H: panel" % SESSION.SYSTEM_NAMES[session.selected_system]
-	input_hint.text += "\n%.1f mm | range %.0f-%.0f mm | %s" % [input.metres * 1000, input.minimum_metres*1000, input.maximum_metres*1000, input.state if reason.is_empty() else reason]
+		lab.sheet_status.text+="\n총 %.2f / 리그 %.2f / 콕핏 %.2f m" % [input.length_budget.total_metres,input.length_budget.rig_metres,input.length_budget.cockpit_metres]
+
+func _style(panel: PanelContainer) -> void:
+	var theme := Theme.new()
+	theme.default_font_size=17
+	panel.theme=theme
+	var style := StyleBoxFlat.new()
+	style.bg_color=Color(.04,.075,.10,.94)
+	for edge in ["left","right","top","bottom"]: style.set("content_margin_"+edge,10)
+	panel.add_theme_stylebox_override("panel",style)
 
 func _row(parent: Node) -> HBoxContainer:
 	var result := HBoxContainer.new()
-	result.add_theme_constant_override("separation", 8)
+	result.add_theme_constant_override("separation",8)
 	parent.add_child(result)
 	return result
 
-func _label(text: String, parent: Node) -> Label:
+func _label(text: String,parent: Node) -> Label:
 	var result := Label.new()
-	result.text = text
+	result.text=text
 	parent.add_child(result)
 	return result
 
-func _button(text: String, callback: Callable, parent: Node) -> Button:
+func _button(text: String,callback: Callable,parent: Node) -> Button:
 	var result := Button.new()
-	result.text = text
-	result.focus_mode = Control.FOCUS_NONE
+	result.text=text
+	result.focus_mode=Control.FOCUS_NONE
 	result.pressed.connect(callback)
 	parent.add_child(result)
 	return result
 
-func _slider(low: float, high: float, step: float, callback: Callable, parent: Node) -> HSlider:
+func _slider(low: float,high: float,step: float,callback: Callable,parent: Node) -> HSlider:
 	var result := HSlider.new()
-	result.focus_mode = Control.FOCUS_NONE
-	result.min_value = low
-	result.max_value = high
-	result.step = step
-	result.custom_minimum_size = Vector2(140, 24)
-	result.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	result.focus_mode=Control.FOCUS_NONE
+	result.min_value=low
+	result.max_value=high
+	result.step=step
+	result.custom_minimum_size=Vector2(140,24)
+	result.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	result.value_changed.connect(callback)
 	parent.add_child(result)
 	return result

@@ -13,6 +13,8 @@ const HELPER_ELBOW := Vector3(-.30,1.40,1.30)
 ## elbow around that fixed wrist, retaining the shaft grip and wrist cone.
 const HELPER_ELBOW_DIRECTION := Vector3(1,-1,1)
 const HELPER_WRIST_LIMIT_DEGREES := 44.0
+## The seated hold has a lower elbow than the high, load-bearing handover.
+const REST_ELBOW_DIRECTION := Vector3(0,-1,1)
 const HELPER_LIFT := Vector3(0,.35,.35)
 const CATCH_FRACTION := .55
 const REGRIP_FRACTION := .35

@@ -4,14 +4,14 @@
 
 [resource]
 script = ExtResource("1_ixy83")
-minimum_rig_metres = 2.4233476377374026
-minimum_cockpit_metres = 1.1588545240461827
-maximum_held_metres = 1.0588545240461826
-fixed_end_metres = 0.3158828706946224
-free_end_metres = 0.4035910710808821
+minimum_rig_metres = 2.423424527889234
+minimum_cockpit_metres = 1.1588544989004732
+maximum_held_metres = 1.0588544989004731
+fixed_end_metres = 0.23125006799818948
+free_end_metres = 0.2641051553655416
 source_signatures = {
-"res://src/boat/animation/sheet_relay_feed.tres": "c230f5e5bf7f5d0a215469a53ba51e3dd9a7e4d9b9ebb9733e8d8f3c38bf3e35",
-"res://src/boat/ilca_training_rig.gd": "e412fac07f92196743744f3ef0071131426d5472b321834c4fe9b022ff98f576",
-"res://src/boat/mainsheet_stopper.gd": "7a6819bf99510146bc64c74a98792cf39aa3e71495962daa49efc41a1c2c1d91",
+"res://src/boat/animation/sheet_relay_feed.tres": "5b72638c0402a3264f01fcce3c40a4f5d898c95a269c6091262d2bf4a821af79",
+"res://src/boat/ilca_training_rig.gd": "a088f75f7a380eac9f7728e219d14766cd6989ebdcb401a2fea7052d6b59ea85",
+"res://src/boat/mainsheet_stopper.gd": "2ea7c4951e3409feeeea3ff08c7c83daf4bedbe32c926c0bb5928e78b189faf7",
 "res://src/boat/training_sheave_block.gd": "9474409994a91fdf1d3eddf245aa0dcc3668a94348ccafe6c53c5101b9a21c73"
 }

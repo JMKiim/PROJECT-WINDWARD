@@ -316,18 +316,25 @@ func _end_floor_gap(origin: Vector3,rotation: Quaternion) -> float:
 	return gap
 
 func _supported_end_roll(origin: Vector3,rotation: Quaternion) -> Quaternion:
-	var angle := 0.0
-	for pass_index in 3:
-		var adjustment := 0.0
-		var rolled := rotation*Quaternion(Vector3.RIGHT,-angle)
+	# A dressed knot can lie on either side of its inlet tangent. Lift the
+	# actual lowest finite point about the fixed inlet, not an assumed +Z lobe.
+	# This is a bounded rigid contact projection; material length is unchanged.
+	for pass_index in 8:
+		var angle := 0.0
+		var axis := Vector3.ZERO
 		for point in end_shape:
-			if point.z<.003: continue
-			var world := origin+rolled*point
+			var relative := rotation*point
+			var horizontal := Vector3(relative.x,0,relative.z)
+			if horizontal.length()<.003: continue
+			var world := origin+relative
 			var required: float = hull.cockpit_floor_y_at(world.x,world.z)+RADIUS+.0005-world.y
-			adjustment = maxf(adjustment,required/point.z)
-		if adjustment<.00001: break
-		angle = minf(deg_to_rad(75),angle+adjustment)
-	return rotation*Quaternion(Vector3.RIGHT,-angle)
+			var correction := atan2(maxf(0,required),horizontal.length())
+			if correction>angle:
+				angle = correction
+				axis = horizontal.cross(Vector3.UP).normalized()
+		if angle<.00001: break
+		rotation = Quaternion(axis,minf(angle,deg_to_rad(20)))*rotation
+	return rotation
 
 func _update_supports() -> void:
 	floor_supports = actor.sheet_study._tail_supports()

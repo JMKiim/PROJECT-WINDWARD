@@ -5,9 +5,10 @@ const HULL_LENGTH_METERS := 4.23
 const HULL_BEAM_METERS := 1.37
 const TRIM_TUBE_SIDES := 16
 const DECK_SPAN_SEGMENTS := 12
-const HULL_SECTION_SEGMENTS := 24
+const HULL_SECTION_SEGMENTS := 48
 const COCKPIT_FLOOR_SEGMENTS := 16
-const HULL_LONGITUDINAL_SEGMENTS := 56
+const HULL_LONGITUDINAL_SEGMENTS := 96
+const COCKPIT_SPAN_SEGMENTS := 96
 const COCKPIT_LONGITUDINAL_SEGMENTS := 72
 const WATERLINE_DATUM_Y := -0.06
 const CUTS := preload("res://src/boat/ilca_mesh_cut.gd")
@@ -37,6 +38,8 @@ var _drain_seat := Plane()
 var _drain_seat_center := Vector3.ZERO
 var _surface_kind := 0
 var _face_normal := Vector3.ZERO
+var _station_slopes := {}
+var _cockpit_slopes := PackedFloat64Array()
 
 var _stations: Array[Dictionary] = [
 	# C02 measurement reference, normalized to the public 4.23 m x 1.37 m
@@ -68,7 +71,45 @@ var _cockpit_half_widths := [0.076, 0.120, 0.165, 0.205, 0.275, 0.350, 0.415, 0.
 
 
 func _ready() -> void:
+	_prepare_curve_slopes()
 	mesh = _build_hull_mesh()
+
+
+func _prepare_curve_slopes() -> void:
+	# Station spacing is not uniform. Tangents are metres per metre, so a
+	# control station cannot introduce a crease or overshoot the control knots.
+	var positions := PackedFloat64Array()
+	for station in _stations: positions.append(station.z)
+	for field in ["width", "deck", "keel"]:
+		var values := PackedFloat64Array()
+		for station in _stations: values.append(station[field])
+		_station_slopes[field] = _monotone_slopes(positions, values)
+	_cockpit_slopes = _monotone_slopes(PackedFloat64Array(_cockpit_z_positions), PackedFloat64Array(_cockpit_half_widths))
+
+
+static func _monotone_slopes(positions: PackedFloat64Array, values: PackedFloat64Array) -> PackedFloat64Array:
+	var result := PackedFloat64Array()
+	result.resize(values.size())
+	result[0] = (values[1] - values[0]) / (positions[1] - positions[0])
+	result[-1] = (values[-1] - values[-2]) / (positions[-1] - positions[-2])
+	for index in range(1, values.size() - 1):
+		var h0 := positions[index] - positions[index - 1]
+		var h1 := positions[index + 1] - positions[index]
+		var d0 := (values[index] - values[index - 1]) / h0
+		var d1 := (values[index + 1] - values[index]) / h1
+		if d0 * d1 <= 0.0:
+			result[index] = 0.0
+		else:
+			var w0 := 2.0 * h1 + h0
+			var w1 := h1 + 2.0 * h0
+			result[index] = (w0 + w1) / (w0 / d0 + w1 / d1)
+	return result
+
+
+static func _curve_value(a: float, b: float, ma: float, mb: float, width: float, t: float) -> float:
+	var t2 := t * t
+	var t3 := t2 * t
+	return (2*t3 - 3*t2 + 1)*a + (t3 - 2*t2 + t)*width*ma + (-2*t3 + 3*t2)*b + (t3 - t2)*width*mb
 
 
 func _build_hull_mesh() -> ArrayMesh:
@@ -346,20 +387,13 @@ func _station_at(z_position: float) -> Dictionary:
 		if z_position < first_z or z_position > second_z:
 			continue
 		var ratio := inverse_lerp(first_z, second_z, z_position)
-		var previous: Dictionary = _stations[maxi(0, index - 1)]
-		var following: Dictionary = _stations[mini(_stations.size() - 1, index + 2)]
-		var width := cubic_interpolate(
-			float(first["width"]),
-			float(second["width"]),
-			float(previous["width"]),
-			float(following["width"]),
-			ratio
-		)
+		if _station_slopes.is_empty(): _prepare_curve_slopes()
+		var width := _curve_value(first.width, second.width, _station_slopes.width[index], _station_slopes.width[index+1], second_z-first_z, ratio)
 		return {
 			"z": z_position,
 			"width": clampf(width, 0.0, HULL_BEAM_METERS * 0.5),
-			"deck": cubic_interpolate(float(first["deck"]), float(second["deck"]), float(previous["deck"]), float(following["deck"]), ratio),
-			"keel": cubic_interpolate(float(first["keel"]), float(second["keel"]), float(previous["keel"]), float(following["keel"]), ratio),
+			"deck": _curve_value(first.deck, second.deck, _station_slopes.deck[index], _station_slopes.deck[index+1], second_z-first_z, ratio),
+			"keel": _curve_value(first.keel, second.keel, _station_slopes.keel[index], _station_slopes.keel[index+1], second_z-first_z, ratio),
 		}
 	return _stations.back().duplicate()
 
@@ -399,11 +433,10 @@ func _cockpit_half_width_at(z_position: float) -> float:
 		if z_position < first_z or z_position > second_z:
 			continue
 		var ratio := inverse_lerp(first_z, second_z, z_position)
-		var previous := float(_cockpit_half_widths[maxi(0, index - 1)])
 		var first := float(_cockpit_half_widths[index])
 		var second := float(_cockpit_half_widths[index + 1])
-		var following := float(_cockpit_half_widths[mini(_cockpit_half_widths.size() - 1, index + 2)])
-		return maxf(0.0, cubic_interpolate(first, second, previous, following, ratio))
+		if _cockpit_slopes.is_empty(): _prepare_curve_slopes()
+		return maxf(0.0, _curve_value(first, second, _cockpit_slopes[index], _cockpit_slopes[index+1], second_z-first_z, ratio))
 	return 0.0
 
 
@@ -418,13 +451,13 @@ func _add_transom(surface: SurfaceTool) -> void:
 
 
 func _add_closed_deck(surface: SurfaceTool, z_positions: Array) -> void:
-	# Use the same central 48 columns and 12 side strips as the well boundary.
+	# Match the well's central columns and the side strips at each boundary.
 	# Matching positions matter even when both surfaces sample the same curve.
 	var boundary_z: float = z_positions.back() if float(z_positions.back()) <= float(_cockpit_z_positions.front()) + 0.0001 else z_positions.front()
 	var inner_ratio := _cockpit_half_width_at(boundary_z) / _deck_profile_at(boundary_z).x
 	var ratios := PackedFloat32Array()
 	for column in DECK_SPAN_SEGMENTS: ratios.append(lerpf(-1.0, -inner_ratio, float(column) / DECK_SPAN_SEGMENTS))
-	for column in 48: ratios.append(lerpf(-inner_ratio, inner_ratio, float(column) / 48.0))
+	for column in COCKPIT_SPAN_SEGMENTS: ratios.append(lerpf(-inner_ratio, inner_ratio, float(column) / COCKPIT_SPAN_SEGMENTS))
 	for column in range(DECK_SPAN_SEGMENTS + 1): ratios.append(lerpf(inner_ratio, 1.0, float(column) / DECK_SPAN_SEGMENTS))
 	for index in range(z_positions.size() - 1):
 		var z_forward := float(z_positions[index])
@@ -483,7 +516,7 @@ func _add_side_decks_and_cockpit(surface: SurfaceTool) -> void:
 
 func _add_cockpit_well(surface: SurfaceTool) -> void:
 	var samples := _cockpit_samples()
-	var columns := 48
+	var columns := COCKPIT_SPAN_SEGMENTS
 	for row in range(samples.size() - 1):
 		var z0 := float(samples[row].z)
 		var z1 := float(samples[row + 1].z)

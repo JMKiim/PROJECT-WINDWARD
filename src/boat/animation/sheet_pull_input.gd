@@ -88,7 +88,7 @@ func request_pull(notches: float, coarse := false) -> float:
 	since_input = 0.0
 	return _queue_distance(requested)
 
-func request_wheel(notches: float, coarse := false) -> float:
+func request_wheel(notches: float, coarse := false,event_seconds := NAN) -> float:
 	if not active or not is_finite(notches) or is_zero_approx(notches): return 0.0
 	# Keep the explicit fixed-distance inspection shortcut unchanged. The
 	# ordinary wheel does not require that modifier to reach its fast clock.
@@ -98,9 +98,8 @@ func request_wheel(notches: float, coarse := false) -> float:
 	wheel_gesture_enabled = true
 	# Measure physical rotation independently of trim gain and Shift. A
 	# direction change resets the old gesture before its first fine notch.
-	wheel_gesture.push(detents*METRES_PER_NOTCH)
-	wheel_gain = wheel_gesture.trim_gain()
-	var requested := detents*METRES_PER_NOTCH*wheel_gain
+	var requested: float=wheel_gesture.request_distance(detents*METRES_PER_NOTCH,event_seconds)
+	wheel_gain = wheel_gesture.packet_gain
 	since_input = 0.0
 	return _queue_distance(requested)
 
@@ -119,6 +118,7 @@ func _queue_distance(requested: float) -> float:
 
 func advance(delta: float, steering: float = 0.0) -> void:
 	if not active or not is_finite(delta) or delta <= 0.0: return
+	wheel_gesture.note_frame(delta)
 	_refresh_bounds()
 	if motion!=null:
 		if not is_finite(steering): return
