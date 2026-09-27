@@ -88,10 +88,11 @@ func update_geometry(display := true) -> bool:
 	key.append(requested_rig_pitch if is_finite(requested_rig_pitch) else "legacy")
 	key.append_array([free_rig_yaw if is_finite(free_rig_yaw) else "taut",free_rig_gravity])
 	key.append(rig.traveller_override if rig.traveller_override.is_finite() else "fixed traveller")
+	key.append(rig.traveller_pose_override if rig.traveller_pose_locked else "loaded block")
 	if key==geometry_key and last_result.get("valid",false):
 		if display:
 			if is_finite(free_rig_yaw):
-				rig.rope_view.show_path(rig.route)
+				rig.rope_view.show_static_path(rig.route,last_result.get("surface_arrays",[]))
 				rig.fixed_view.show_path(rig.fixed_end)
 			elif is_finite(requested_rig_pitch):
 				var current: Vector2=rig_constraint.angles()

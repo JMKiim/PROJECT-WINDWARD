@@ -26,6 +26,9 @@ const TRAVELLER_HALF_SPAN := .500
 const LOADED_TRAVELLER_X := .455
 # Separate mounting eye below the spar; its detailed height is provisional.
 const BOOM_EYE_DROP := .016
+# Fixed connector datums; provisional hardware dimensions, never elastic.
+const TRAVELLER_LINK_SPAN := .012
+const TRAVELLER_LINK_WIDTH := .006
 var boom_pivot: Node3D
 var boom: MeshInstance3D
 var aft: MeshInstance3D
@@ -68,6 +71,9 @@ var traveller_rope_key := Vector4(INF,INF,INF,INF)
 var traveller_override := Vector3(NAN,NAN,NAN)
 var traveller_rest := Vector3.ZERO
 var traveller_upper_rest := Vector3.ZERO
+var traveller_pose_override := Transform3D.IDENTITY
+var traveller_pose_locked := false
+var traveller_pose_boundary := Vector3.ZERO
 
 func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	hull = floor_mesh
@@ -232,6 +238,8 @@ func set_angles(yaw: float,pitch: float,display := true) -> void:
 	# The independent-angle boundary uses exactly the same fitted hardware,
 	# wraps and fixed end as the approved one-parameter inspection mode.
 	if not is_finite(yaw) or not is_finite(pitch): return
+	if traveller_pose_locked and Vector3(yaw,pitch,tiller_angle).distance_to(traveller_pose_boundary)>.000001:
+		traveller_pose_locked=false
 	side = -1 if yaw<0 else 1
 	opening = clampf(inverse_lerp(minimum_yaw,deg_to_rad(175),absf(yaw)),0,1)
 	# The unstayed mast turns with the boom. Yaw belongs at the mast centre;
@@ -245,6 +253,9 @@ func set_angles(yaw: float,pitch: float,display := true) -> void:
 	else:
 		traveller_lower.position=Vector3(LOADED_TRAVELLER_X*side,traveller_rest.y,traveller_rest.z)
 		traveller.position=Vector3(LOADED_TRAVELLER_X*side,traveller_upper_rest.y,traveller_upper_rest.z)
+	_update_traveller(false)
+	var upper_attachment := _anchor(traveller_lower,&"attachment")+Vector3.UP*TRAVELLER_LINK_SPAN
+	if traveller_pose_locked: traveller.transform=traveller_pose_override
 	var b := _anchor(traveller)
 	var c := _anchor(aft)
 	# The guide datum is the open aperture, not the metal bridge centre.
@@ -260,14 +271,21 @@ func set_angles(yaw: float,pitch: float,display := true) -> void:
 	c = aft_mount-boom_pivot.basis.y*.035
 	e = forward_mount-boom_pivot.basis.y*.035
 	for iteration in 24:
+		var prior_centers := [b,c,e]
 		var aft_up := _suspension_up(b,d,c,boom_pivot.basis.y,.020,.035)
 		var forward_up := _suspension_up(d,f,e,boom_pivot.basis.y,.020,.035)
 		c = aft_mount-aft_up*.035
 		e = forward_mount-forward_up*.035
 		_align_block(aft,c,b,d,aft_up)
 		_align_block(forward_block,e,d,f,forward_up)
+		var becket := to_local(aft.to_global(aft.rope_anchor_local(&"becket")+Vector3.UP*.0065))
+		if not traveller_pose_locked: _align_block(traveller,b,becket,c,Vector3.DOWN)
+		# Solve the block position from its physical eye, not an unrelated
+		# vertical sheave spacing followed by a stretched display connector.
+		if not traveller_pose_locked: traveller.position+=upper_attachment-_anchor(traveller,&"attachment")
+		b=_anchor(traveller)
+		if b.distance_squared_to(prior_centers[0])<1e-16 and c.distance_squared_to(prior_centers[1])<1e-16 and e.distance_squared_to(prior_centers[2])<1e-16: break
 	var a := to_local(aft.to_global(aft.rope_anchor_local(&"becket")+Vector3.UP*.0065))
-	_align_block(traveller,b,a,c,Vector3.DOWN)
 	# The fixed end passes through the becket's open gap. Its knot is aft of
 	# the opening; the loaded leg leaves forward around the transverse pin.
 	var pin := _anchor(aft,&"becket")
@@ -319,6 +337,12 @@ func set_angles(yaw: float,pitch: float,display := true) -> void:
 		fixed_view.show_path(fixed_end)
 	_update_traveller(display)
 
+func lock_traveller_pose(pose: Transform3D) -> void:
+	traveller_pose_override=pose
+	traveller_pose_locked=true
+	var axis := boom_pivot.basis.z
+	traveller_pose_boundary=Vector3(atan2(axis.x,axis.z),atan2(-axis.y,Vector2(axis.x,axis.z).length()),tiller_angle)
+
 func _update_traveller(display := false) -> void:
 	# The lower sheave datum depends on steering/side, not the boom's trim.
 	# Reuse its rope mesh through the repeated main-sheet length evaluations.
@@ -367,11 +391,13 @@ func _draw_traveller() -> void:
 	var lower := _anchor(traveller_lower,&"attachment")
 	var center := (upper+lower)*.5
 	var link := PackedVector3Array()
+	var along := (upper-lower).normalized()
 	var axis := (global_basis.inverse()*traveller.global_basis.x).normalized()
+	axis=(axis-along*axis.dot(along)).normalized()
+	if axis.is_zero_approx(): axis=along.cross(Vector3.FORWARD).normalized()
 	for index in 33:
 		var angle := TAU*index/32.0
-		var separation := (upper-lower)*.5
-		link.append(center+separation*cos(angle)+axis*sin(angle)*.006)
+		link.append(center+along*cos(angle)*TRAVELLER_LINK_SPAN*.5+axis*sin(angle)*TRAVELLER_LINK_WIDTH)
 	traveller_link.show_path(link)
 
 func _deck_lift(points: PackedVector3Array) -> float:

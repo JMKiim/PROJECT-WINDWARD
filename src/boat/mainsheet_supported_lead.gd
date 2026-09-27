@@ -100,8 +100,10 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 		prefix_remaining[index] = prefix_remaining[index+1]+fixed[index].distance_to(fixed[index+1])
 	var fixed_groups := _groups(fixed)
 	var support_bounds := []
+	var point_support_bounds := []
 	for support in supports:
 		support_bounds.append(_bounds(support[0],support[1]).grow(support[2]+.002))
+		point_support_bounds.append(_bounds(support[0],support[1]).grow(support[2]+.003001))
 	for pass_index in 12:
 		var before_pass := curve.duplicate()
 		# A cold pose may have long, uneven support chords. An already
@@ -110,7 +112,11 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 		if pass_index>0 and (not warm or (not expanded_contacts and pass_index==6)): curve = _redistribute(curve)
 		for index in range(1,segments):
 			var point := curve[index]
-			for support in supports:
+			for support_index in supports.size():
+				# Exact capsule projection only inside its conservative box.
+				# Keep original order: each correction changes the next query.
+				if not point_support_bounds[support_index].has_point(point): continue
+				var support: Array=supports[support_index]
 				var nearest := Geometry3D.get_closest_point_to_segment(point,support[0],support[1])
 				var offset := point-nearest
 				var radius: float = support[2]+.003

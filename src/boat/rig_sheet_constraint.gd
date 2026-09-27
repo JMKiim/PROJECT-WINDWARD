@@ -8,8 +8,17 @@ const MAX_PITCH := deg_to_rad(18)
 const LENGTH_TOLERANCE := .00005
 const DERIVATIVE_STEP := .0015
 const HANGING := preload("res://src/boat/rig_hanging_sheet.gd")
+const SUPPORT := preload("res://src/boat/hull_rope_support.gd")
 var rig: Node3D
 var evaluations := 0
+var hull_support: RefCounted
+var support_key := []
+var drape_key := []
+var drape_boundary := PackedVector3Array()
+var drape_result := {}
+var drape_solves := 0
+var drape_cache_hits := 0
+var spatial_guide_state: RefCounted
 
 func _init(value: Node3D) -> void:
 	rig=value
@@ -136,31 +145,87 @@ func local_derivative(q: Vector2,axis: int,h: float) -> float:
 func drape(target: float,yaw: float,pitch: float,gravity: Vector3,display := true) -> Dictionary:
 	var previous := angles()
 	var previous_path: PackedVector3Array=rig.route.duplicate()
+	var previous_static: bool=rig.rope_view.static_display
 	if not is_finite(yaw) or not is_finite(pitch) or absf(yaw)<rig.minimum_yaw or absf(yaw)>MAX_YAW or pitch<MIN_PITCH or pitch>MAX_PITCH:
 		return {"valid":false,"reason":"outside hanging rig angle bounds"}
-	rig.set_angles(yaw,pitch,display)
+	prepare_drape_boundary(yaw,pitch)
+	var frame: Transform3D=rig.global_transform.affine_inverse()*rig.hull.global_transform
+	var request := [target,yaw,pitch,gravity,rig.hull.mesh,frame,rig.tiller_angle,HANGING.exit_turn_metres]
+	var boundary: PackedVector3Array=rig.route.duplicate()
+	if request==drape_key and _same_drape_boundary(boundary):
+		drape_cache_hits+=1
+		rig.route=drape_result.path
+		if display: _display_drape(drape_result.get("surface_arrays",[]))
+		return drape_result.duplicate(true)
+	drape_solves+=1
 	var result: Dictionary=HANGING.build(rig.route,rig.wraps,target,gravity)
 	if result.valid and not _clear_of_hull(result.path):
-		result={"valid":false,"reason":"hanging rig requires unsupported hull contact"}
+		var key := [rig.hull.mesh,frame,gravity.normalized()]
+		if key!=support_key:
+			hull_support=SUPPORT.new()
+			hull_support.setup(rig.hull.mesh,frame,gravity,.004)
+			support_key=key
+		if not hull_support.valid:
+			result={"valid":false,"reason":"invalid hull contact surface"}
+		elif hull_support.clearance(result.path)<0:
+			result=HANGING.build(rig.route,rig.wraps,target,gravity,hull_support)
 	if not result.valid:
-		rig.set_angles(previous.x,previous.y,display)
+		prepare_drape_boundary(previous.x,previous.y)
 		rig.route=previous_path
-		if display: rig.rope_view.show_path(rig.route)
+		if display:
+			if previous_static: _display_drape()
+			else:
+				rig.rope_view.show_path(rig.route)
+				rig.fixed_view.show_path(rig.fixed_end)
+				rig._draw_traveller()
 		return result
 	rig.route=result.path
-	if display:
-		rig.rope_view.show_path(rig.route)
-		rig.fixed_view.show_path(rig.fixed_end)
-		# Refresh fittings without replacing the hanging material path.
-		rig.traveller_view.show_path(rig.traveller_path)
-		rig.traveller_control.show_path(rig.traveller_control_path)
+	if display: _display_drape()
 	result["yaw"]=yaw
 	result["pitch"]=pitch
+	drape_key=request
+	drape_boundary=boundary
+	drape_result=result.duplicate(true)
 	return result
 
+func prepare_drape_boundary(yaw: float,pitch: float) -> void:
+	if spatial_guide_state!=null and spatial_guide_state.matches(rig,yaw,pitch):
+		if spatial_guide_state.apply(rig,yaw,pitch): return
+	rig.set_angles(yaw,pitch,false)
+
+func _same_drape_boundary(path: PackedVector3Array) -> bool:
+	if path.size()!=drape_boundary.size() or drape_result.is_empty(): return false
+	# Repeated authored pose evaluation has sub-micrometre float noise. This
+	# cache bound is independent of (and much tighter than) contact acceptance.
+	for index in path.size():
+		if path[index].distance_squared_to(drape_boundary[index])>4e-12: return false
+	return true
+
+func accept_prepared(target: float,yaw: float,pitch: float,gravity: Vector3,boundary: PackedVector3Array,result: Dictionary) -> bool:
+	# Only the main-thread transaction can publish a detached worker result.
+	# Validate the exact source path again; do not attach it to a new trim.
+	if not result.get("valid",false) or not result.has("path") or boundary.size()!=rig.route.size(): return false
+	if not is_finite(target) or result.path.size()<2: return false
+	for point: Vector3 in result.path:
+		if not point.is_finite(): return false
+	for index in boundary.size():
+		if boundary[index].distance_squared_to(rig.route[index])>4e-12: return false
+	if absf(HANGING.length_of(result.path)-target)>HANGING.LENGTH_EPS: return false
+	var frame: Transform3D=rig.global_transform.affine_inverse()*rig.hull.global_transform
+	drape_key=[target,yaw,pitch,gravity,rig.hull.mesh,frame,rig.tiller_angle,HANGING.exit_turn_metres]
+	drape_boundary=boundary.duplicate()
+	drape_result=result.duplicate(true)
+	return true
+
+func _display_drape(prepared: Array=[]) -> void:
+	rig.rope_view.show_static_path(rig.route,prepared)
+	rig.fixed_view.show_path(rig.fixed_end)
+	rig._draw_traveller()
+
 func _clear_of_hull(path: PackedVector3Array) -> bool:
-	# Hanging rig spans do not yet have a deck-contact branch. Refuse a sag
-	# through the moulding; never project it upwards and silently change length.
+	# Conservative broad phase, including the rolled lip and well boundary.
+	# Near misses still use the unchanged free path after the actual mesh check.
+	const MARGIN := .025
 	var frame: Transform3D=rig.hull.global_transform.affine_inverse()*rig.global_transform
 	for index in path.size()-1:
 		var a: Vector3=frame*path[index]
@@ -168,11 +233,11 @@ func _clear_of_hull(path: PackedVector3Array) -> bool:
 		var samples := maxi(1,ceili(a.distance_to(b)/.015))
 		for sample in samples+1:
 			var p := a.lerp(b,sample/float(samples))
-			if absf(p.z)>rig.HULL.HULL_LENGTH_METERS*.5: continue
+			if absf(p.z)>rig.HULL.HULL_LENGTH_METERS*.5+MARGIN: continue
 			var width: float=rig.hull._deck_profile_at(p.z).x
-			if absf(p.x)>width+.004: continue
+			if absf(p.x)>width+MARGIN: continue
 			var surface: float=rig.hull.deck_y_at(p.x,p.z)
-			if p.z>=-.390 and p.z<=1.415 and absf(p.x)<rig.hull._cockpit_half_width_at(p.z):
+			if p.z>=-.390+MARGIN and p.z<=1.415-MARGIN and absf(p.x)<rig.hull._cockpit_half_width_at(p.z)-MARGIN:
 				surface=rig.hull.cockpit_floor_y_at(p.x,p.z)
-			if p.y-.004<surface-.0005: return false
+			if p.y-.004<surface+MARGIN: return false
 	return true

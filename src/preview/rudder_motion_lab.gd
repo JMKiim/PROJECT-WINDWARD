@@ -103,6 +103,7 @@ func _process(delta: float) -> void:
 	# The distance profile must see this frame's steering, not the previous
 	# frame's angle. Posture and hand state are evaluated together afterward.
 	session.advance(delta)
+	if rig_inspection!=null: rig_inspection.prepare_geometry()
 	_refresh_preview()
 	if rig_inspection!=null: rig_inspection.advance()
 	if not is_equal_approx(previous_hike, actor.hike) and selected_view != 3:

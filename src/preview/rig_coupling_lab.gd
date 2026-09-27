@@ -5,6 +5,11 @@ extends Node3D
 const EQUILIBRIUM := preload("res://src/boat/rig_equilibrium.gd")
 const TRAVELLER := preload("res://src/boat/traveller_equilibrium.gd")
 const LINE := preload("res://src/boat/rope_view.gd")
+const BLOCK_SUPPORT := preload("res://src/boat/traveller_block_support.gd")
+const CONTACT_TASK := preload("res://src/boat/deck_contact_task.gd")
+const SPATIAL_GUIDE := preload("res://src/boat/spatial_guide_state.gd")
+const LEAD_PREPARATION := preload("res://src/boat/supported_lead_preparation.gd")
+var spatial_contact_enabled := true
 var deck: Node3D
 var solver: RefCounted
 var traveller_solver: RefCounted
@@ -18,11 +23,19 @@ var solve_ms := 0.0
 var message := "설정 후 '하중 평형 계산'을 눌러 주세요."
 var solved_key := []
 var pending_action := ""
+var pending_background := true
 var last_action := {}
 var diagram_enabled := false
 var deformation_key := []
 var details: Label
 var vang_reference := 0.0
+var deck_contact_preview := false
+var block_support := BLOCK_SUPPORT.new()
+var contact_task := CONTACT_TASK.new()
+var contact_ticket := []
+var contact_prepared := {}
+var contact_cancelled := false
+var contact_started_usec := 0
 
 func setup(value: Node3D) -> void:
 	deck=value
@@ -47,43 +60,74 @@ func setup(value: Node3D) -> void:
 	_display_deformation()
 	_refresh_status()
 
+func _warm_block_contact() -> void:
+	# Build the static neutral preset while the inspection scene is loading,
+	# then restore all live geometry. No contact search runs in the frame loop.
+	var rig: Node3D=deck.complete_sheet.rig
+	var q: Vector2=deck.complete_sheet.rig_constraint.angles()
+	var opening: float=rig.opening
+	rig.set_angles(deg_to_rad(45),deg_to_rad(-6),false)
+	block_support.settle(rig,Vector3(0,-9.81,0))
+	rig.set_angles(q.x,q.y,false)
+	rig.opening=opening
+
+func prepare_geometry() -> void:
+	# Release a static example before the first changed-input geometry pass,
+	# not after paying for a supported solve that will be discarded anyway.
+	if deck_contact_preview and solved_key!=_boundary_key(): _leave_changed_static()
+
+func _leave_changed_static() -> void:
+	var queued := pending_action
+	clear_load()
+	pending_action=queued
+	message="조작 조건이 바뀌어 정적 검수를 해제했어요. 다시 계산해 주세요."
+
 func advance() -> void:
-	if deck.complete_sheet.rig.traveller_override.is_finite() and solved_key!=_boundary_key():
-		var queued := pending_action
-		clear_load()
-		pending_action=queued
-		message="조작 조건이 바뀌어 트래블러 정적 검수를 해제했어요. 다시 계산해 주세요."
+	_advance_contact()
+	if (deck.complete_sheet.rig.traveller_override.is_finite() or deck_contact_preview) and solved_key!=_boundary_key():
+		_leave_changed_static()
 	elif not deck.complete_sheet.last_result.get("valid",false):
 		deck.complete_sheet.clear_rig_pitch()
 		message="현재 줄 길이는 이 높이와 함께 유지할 수 없어 기본 리그로 복귀했어요."
 		result.clear()
 	elif result.get("valid",false) and solved_key!=_boundary_key():
 		message="시트/손 위치가 바뀌었어요. 아래 장력은 이전 조건이며 재계산이 필요해요."
-	if not pending_action.is_empty() and deck.session.wheel_pull.state=="REST":
+	if not pending_action.is_empty() and deck.session.wheel_pull.state=="REST" and not contact_busy():
 		var action := pending_action
 		pending_action=""
-		request_action(action)
+		request_action(action,pending_background)
 	_display_deformation()
 	_refresh_status()
 
-func request_action(action: String) -> Dictionary:
-	if action not in ["center","load","slack"]:
+func request_action(action: String,background := true) -> Dictionary:
+	if action not in ["center","load","slack","deck"]:
 		return {"valid":false,"reason":"unknown inspection request"}
 	deck.session.wheel_pull.pause()
 	if deck.session.wheel_pull.state!="REST":
 		pending_action=action
+		pending_background=background
 		message="손 복귀 후 실행할게요. 다시 누를 필요 없어요. [대기 취소]로 취소 가능"
 		_refresh_status()
 		return {"valid":false,"queued":true,"reason":"wait for hand return"}
 	pending_action=""
+	if contact_busy():
+		if action=="deck" and not contact_cancelled:
+			return {"valid":false,"queued":true,"reason":"contact calculation in progress"}
+		_cancel_contact()
+		pending_action=action
+		pending_background=background
+		return {"valid":false,"queued":true,"reason":"wait for cancelled calculation"}
+	if deck_contact_preview and action in ["center","load"]: clear_load()
 	match action:
 		"center": last_action=place_traveller_center()
 		"load": last_action=solve_traveller()
 		"slack": last_action=show_slack_example()
+		"deck": last_action=begin_deck_contact() if background else show_deck_contact_example()
 	_refresh_status()
 	return last_action.duplicate(true)
 
 func cancel_request() -> void:
+	_cancel_contact()
 	pending_action=""
 	message="대기 요청을 취소했어요. 조작한 줄 길이는 유지해요."
 	_refresh_status()
@@ -137,11 +181,15 @@ func _set_external_loads() -> void:
 
 func _traveller_snapshot() -> Dictionary:
 	var sheet: Node3D=deck.complete_sheet
-	return {"override":sheet.rig.traveller_override,"pitch":sheet.requested_rig_pitch,"free_yaw":sheet.free_rig_yaw,"gravity":sheet.free_rig_gravity,"angles":sheet.rig_constraint.angles(),"mast":solver.model.mast_tip,"loads":solver.model.last.duplicate(true),"last":solver.last.duplicate(true)}
+	return {"override":sheet.rig.traveller_override,"block_locked":sheet.rig.traveller_pose_locked,"block_pose":sheet.rig.traveller_pose_override,"block_boundary":sheet.rig.traveller_pose_boundary,"spatial_guide":sheet.rig_constraint.spatial_guide_state,"pitch":sheet.requested_rig_pitch,"free_yaw":sheet.free_rig_yaw,"gravity":sheet.free_rig_gravity,"angles":sheet.rig_constraint.angles(),"mast":solver.model.mast_tip,"loads":solver.model.last.duplicate(true),"last":solver.last.duplicate(true)}
 
 func _restore_traveller(previous: Dictionary) -> bool:
 	var sheet: Node3D=deck.complete_sheet
 	sheet.rig.traveller_override=previous.override
+	sheet.rig.traveller_pose_locked=previous.block_locked
+	sheet.rig.traveller_pose_override=previous.block_pose
+	sheet.rig.traveller_pose_boundary=previous.block_boundary
+	sheet.rig_constraint.spatial_guide_state=previous.spatial_guide
 	sheet.requested_rig_pitch=previous.pitch
 	sheet.free_rig_yaw=previous.free_yaw
 	sheet.free_rig_gravity=previous.gravity
@@ -212,7 +260,11 @@ func _boundary_key() -> Array:
 	return [deck.complete_sheet.ledger.rig_metres,deck.actor.amount,deck.actor.sheet_control.work,deck.actor.sheet_control.regrip_time,deck.actor.hike,deck.actor.seat_side]
 
 func clear_load() -> void:
+	_cancel_contact()
 	pending_action=""
+	deck_contact_preview=false
+	deck.complete_sheet.rig_constraint.spatial_guide_state=null
+	deck.complete_sheet.rig.traveller_pose_locked=false
 	deck.complete_sheet.rig.traveller_override=Vector3(NAN,NAN,NAN)
 	deck.complete_sheet.clear_rig_pitch()
 	deck.basis=Basis.IDENTITY
@@ -251,6 +303,302 @@ func show_slack_example() -> Dictionary:
 
 func show_rig() -> void:
 	deck.set_view(7)
+
+func show_deck_contact_example(settle_block := true,prepared: Dictionary={}) -> Dictionary:
+	var transaction_started := Time.get_ticks_usec()
+	var transaction_profile := []
+	var application_hands := [deck.actor.palm_boat("Left"),deck.actor.palm_boat("Right")]
+	if not prepared.is_empty():
+		if not prepared.has_all(["block","rope","boundary","target"]) or not prepared.block.get("valid",false) or not prepared.rope.get("valid",false):
+			return {"valid":false,"reason":"incomplete prepared contact result"}
+	# Constrained upper swivel on the locked lower traveller, not full dynamics.
+	if deck.session.wheel_pull.state!="REST" or not deck.session.support_reason().is_empty():
+		message="갑판 접촉 예제는 좌현·앉은 기본 자세에서 손 복귀 후 확인해 주세요."
+		return {"valid":false,"reason":"deck example requires supported resting posture"}
+	var sheet: Node3D=deck.complete_sheet
+	var previous := _traveller_snapshot()
+	var previous_rig: float=sheet.ledger.rig_metres
+	var old_solver: RefCounted=solver
+	var old_traveller: RefCounted=traveller_solver
+	var old_frame := deck.basis
+	var old_result := result.duplicate(true)
+	var old_traveller_result := traveller_result.duplicate(true)
+	var old_preview := deck_contact_preview
+	var old_key := solved_key.duplicate()
+	clear_load()
+	transaction_profile.append({"stage":"clear","ms":(Time.get_ticks_usec()-transaction_started)/1000.0})
+	var yaw := deg_to_rad(45)
+	var pitch := deg_to_rad(-6)
+	sheet.rig.set_angles(yaw,pitch,false)
+	var wanted: float=sheet.rig.length_metres()+1.0
+	sheet.ledger.transfer(sheet.ledger.rig_metres-wanted)
+	sheet.cockpit.reset_motion()
+	transaction_profile.append({"stage":"setup","ms":(Time.get_ticks_usec()-transaction_started)/1000.0})
+	if prepared.has("lead"):
+		sheet.cockpit.supported_lead=prepared.lead
+		sheet.cockpit.supported_lead.last_revision=deck.actor.sheet_study.manual_revision
+	var resting: Dictionary=prepared.get("block",{})
+	if resting.is_empty():
+		if not settle_block: resting={"valid":true}
+		elif spatial_contact_enabled: resting=CONTACT_TASK._block(_example_snapshot())
+		else: resting=block_support.settle(sheet.rig,Vector3(0,-9.81,0))
+	var applied := resting
+	if resting.valid:
+		if settle_block: sheet.rig.lock_traveller_pose(resting.pose)
+		if resting.get("spatial",false):
+			var state := SPATIAL_GUIDE.new()
+			state.setup(resting.pose,yaw,pitch,sheet.rig.tiller_angle)
+			sheet.rig_constraint.spatial_guide_state=state
+		if settle_block and not prepared.has("rope"):
+			# Synchronous diagnostics use the identical detached numeric solver.
+			# Normal UI requests always prepare this on the owned worker.
+			var snapshot := _example_snapshot(resting)
+			prepared={"rope":CONTACT_TASK._rope(snapshot),"boundary":snapshot.path}
+		if prepared.has("rope"):
+			sheet.rig_constraint.prepare_drape_boundary(yaw,pitch)
+			if not sheet.rig_constraint.accept_prepared(wanted,yaw,pitch,Vector3.DOWN,prepared.boundary,prepared.rope):
+				resting={"valid":false,"reason":"prepared contact boundary changed"}
+				applied=resting
+	if resting.valid:
+		applied=sheet.try_free_rig(yaw,pitch,Vector3.DOWN,false)
+		transaction_profile.append({"stage":"apply","ms":(Time.get_ticks_usec()-transaction_started)/1000.0})
+		transaction_profile.append({"stage":"cockpit","timings":sheet.cockpit.last_timings.duplicate(true)})
+		if applied.valid: sheet.update_geometry(true)
+		transaction_profile.append({"stage":"display","ms":(Time.get_ticks_usec()-transaction_started)/1000.0})
+		if settle_block: applied["block_contact"]=resting
+	if not applied.valid or not applied.get("hull_supported",false):
+		sheet.ledger.transfer(sheet.ledger.rig_metres-previous_rig)
+		solver=old_solver
+		traveller_solver=old_traveller
+		applied["valid"]=false
+		applied["restore_failed"]=not _restore_traveller(previous)
+		deck.basis=old_frame
+		result=old_result
+		traveller_result=old_traveller_result
+		deck_contact_preview=old_preview
+		solved_key=old_key
+		message="갑판 접촉 예제를 적용하지 못해 이전 상태로 복원했어요." if not applied.restore_failed else "갑판 접촉 예제와 이전 경로 복원에 실패했어요. 트림 리셋 후 확인해 주세요."
+	else:
+		deck.session.wheel_pull.bind_length_budget(sheet.ledger)
+		solver=EQUILIBRIUM.new(sheet.rig)
+		solver.model.initial_vang_tail=vang_reference
+		traveller_solver=TRAVELLER.new(solver)
+		deck_contact_preview=true
+		solved_key=_boundary_key()
+		message="갑판 접촉 예제 · 위 블록 3축 자중·접촉 / 전체 줄 힘 평형 아님\n아래 블록·붐 지지 고정 · 조작하면 일반 검수로 복귀" if resting.get("spatial",false) else ("갑판 접촉 예제 · 위 블록 자중·접촉 / 전체 하중 평형 아님\n아래 블록·붐 지지 고정 · 조작하면 일반 검수로 복귀" if settle_block else "고정 블록 접촉 진단")
+		# Keep the current view and authored hand sample. A camera change is
+		# optional via the existing view controls, not part of material setup.
+		applied["inspection_only"]=true
+	deck.controls.refresh()
+	_refresh_status()
+	applied["transaction_profile"]=transaction_profile
+	applied["hand_pose_unchanged"]=application_hands==[deck.actor.palm_boat("Left"),deck.actor.palm_boat("Right")]
+	return applied
+
+func _contact_key() -> Array:
+	var sheet: Node3D=deck.complete_sheet
+	return [_boundary_key(),deck.session.mode,deck.session.selected_system,deck.session.requested_hike,deck.session.requested_side,deck.session.wheel_pull.state,sheet.rig.hull.mesh,sheet.rig.global_transform.affine_inverse()*sheet.rig.hull.global_transform,sheet.rig.tiller_angle,sheet.rig_constraint.HANGING.exit_turn_metres,spatial_contact_enabled]
+
+func _example_snapshot(block: Dictionary={}) -> Dictionary:
+	# Temporarily calculate guide geometry without uploading any visible rope.
+	# Restore the live rig before returning to the event loop.
+	var rig: Node3D=deck.complete_sheet.rig
+	var old := _traveller_snapshot()
+	var old_path: PackedVector3Array=rig.route.duplicate()
+	var old_fixed: PackedVector3Array=rig.fixed_end.duplicate()
+	var old_opening: float=rig.opening
+	var old_wraps: Dictionary=rig.wraps.duplicate(true)
+	rig.traveller_override=Vector3(NAN,NAN,NAN)
+	rig.traveller_pose_locked=false
+	rig.set_angles(deg_to_rad(45),deg_to_rad(-6),false)
+	var target: float=rig.length_metres()+1.0
+	if not block.is_empty():
+		if block.get("spatial",false):
+			var moved := SPATIAL_GUIDE.MOVING.move(rig.route,rig.wraps,"traveller",rig.traveller.transform,block.pose)
+			rig.traveller.transform=block.pose
+			rig.lock_traveller_pose(block.pose)
+			rig.route=moved.path
+			rig.wraps=moved.wraps
+		else:
+			rig.lock_traveller_pose(block.pose)
+			rig.set_angles(deg_to_rad(45),deg_to_rad(-6),false)
+	var inverse: Transform3D=rig.global_transform.affine_inverse()
+	var snapshot := {"target":target,"path":rig.route.duplicate(),"wraps":rig.wraps.duplicate(true),"gravity":Vector3.DOWN,"hull":rig.hull.mesh.get_faces(),"hull_frame":inverse*rig.hull.global_transform}
+	snapshot["exit_turn"]=deck.complete_sheet.rig_constraint.HANGING.exit_turn_metres
+	if block.is_empty():
+		snapshot.merge({"rest":rig.traveller.transform,"attachment":rig.traveller.rope_anchor_local(&"attachment"),"tiller_inverse":rig.traveller_tiller_frame().affine_inverse(),"gravity":Vector3(0,-9.81,0)},true)
+		if spatial_contact_enabled:
+			var faces := PackedVector3Array()
+			for record: Dictionary in CONTACT_TASK.OBSTACLE.capture_tree(rig.traveller,rig.traveller.global_transform.affine_inverse()):
+				faces.append_array(record.frame*record.faces)
+			var obstacles := CONTACT_TASK.OBSTACLE.capture_tree(rig.hull,inverse)
+			obstacles.append_array(CONTACT_TASK.OBSTACLE.capture_tree(rig.traveller_lower,inverse))
+			var tiller: Transform3D=rig.traveller_tiller_frame()
+			snapshot.merge({"spatial":true,"body":faces,"block_obstacles":obstacles,"block_lines":[{"path":PackedVector3Array([tiller*Vector3(0,0,-.490),tiller*Vector3(0,0,.490)]),"radius":.0128,"label":"tiller"}]},true)
+		else:
+			snapshot.merge({"body":CONTACT_TASK.BLOCK.body_faces(rig.traveller),"lower":CONTACT_TASK.BLOCK.body_faces(rig.traveller_lower),"lower_frame":rig.traveller_lower.transform},true)
+	else:
+		var records := []
+		for part in [rig.aft,rig.traveller,rig.traveller_lower,rig.traveller_link,rig.forward_block,rig.guide,deck.ratchet,rig.boom]:
+			records.append_array(CONTACT_TASK.OBSTACLE.capture_tree(part,inverse))
+		snapshot["obstacles"]=records
+		# The first 30 mm adjoins the same material at the becket; all of the
+		# separate stopper knot and blue traveller line remain obstacles.
+		var fixed_start := 0
+		var fixed_distance := 0.0
+		while fixed_start<rig.fixed_end.size()-2 and fixed_distance<.030:
+			fixed_distance+=rig.fixed_end[fixed_start].distance_to(rig.fixed_end[fixed_start+1])
+			fixed_start+=1
+		snapshot["contact_lines"]=[{"path":rig.traveller_path.duplicate(),"radius":.003,"label":"traveller line"},{"path":rig.fixed_end.slice(fixed_start),"radius":.004,"label":"fixed stopper"}]
+	rig.traveller_override=old.override
+	rig.traveller_pose_locked=old.block_locked
+	rig.traveller_pose_override=old.block_pose
+	rig.traveller_pose_boundary=old.block_boundary
+	deck.complete_sheet.rig_constraint.prepare_drape_boundary(old.angles.x,old.angles.y)
+	rig.route=old_path
+	rig.wraps=old_wraps
+	rig.fixed_end=old_fixed
+	rig.opening=old_opening
+	return snapshot
+
+func begin_deck_contact() -> Dictionary:
+	if contact_busy(): return {"valid":false,"queued":true,"reason":"contact calculation in progress"}
+	if deck.session.wheel_pull.state!="REST" or not deck.session.support_reason().is_empty():
+		message="갑판 접촉 예제는 좌현·앉은 기본 자세에서 손 복귀 후 확인해 주세요."
+		return {"valid":false,"reason":"deck example requires supported resting posture"}
+	contact_ticket=_contact_key()
+	contact_cancelled=false
+	contact_prepared.clear()
+	contact_started_usec=Time.get_ticks_usec()
+	# The first raw render-array read can be cold. Keep it off the input
+	# dispatch frame and separate it from the pose/material snapshot work.
+	contact_task.stage="snapshot_geometry" if spatial_contact_enabled else "snapshot"
+	message="블록 접촉 계산 중 · 시점 이동 가능 / 조작하면 취소"
+	return {"valid":false,"queued":true,"reason":"contact calculation in progress"}
+
+func _cancel_contact() -> void:
+	if contact_busy():
+		contact_cancelled=true
+		contact_task.cancel()
+
+func contact_busy() -> bool:
+	return contact_task.worker!=null or contact_task.stage in ["snapshot_geometry","snapshot","cockpit","commit"]
+
+func _contact_look_key() -> Array:
+	return [deck.actor.look_enabled,deck.actor.look_pose.yaw,deck.actor.look_pose.pitch]
+
+func _prepare_contact_lead() -> void:
+	# The approved cold lead projection is kept unchanged, but prepared in
+	# bounded sweeps across frames. No live material or visible rope changes.
+	if contact_prepared.has("lead_steps") and contact_prepared.look_key==_contact_look_key():
+		_advance_contact_lead()
+		return
+	contact_task.stage="cockpit"
+	var cockpit: RefCounted=deck.complete_sheet.cockpit
+	var actor: Node3D=deck.actor
+	var candidate: RefCounted=cockpit.supported_lead.get_script().new()
+	var target: float=contact_prepared.target
+	var budget: float=deck.complete_sheet.ledger.cockpit_metres+deck.complete_sheet.ledger.rig_metres-target
+	var raw: PackedVector3Array
+	actor.sheet_study.manual_cache_revision=-1
+	if candidate.has_method("needs_full_prefix") and not candidate.needs_full_prefix() and actor.sheet_control.continuous_relay:
+		raw=candidate.contact_prefix(actor.sheet_control.regrip.held_points(),actor)
+	elif actor.sheet_control.regrip_time>=0: raw=actor.sheet_control.regrip.rope_points(.16)
+	else: raw=actor.sheet_study.manual_points(.16)
+	var held: int=actor.sheet_study.MANUAL_HELD_SEGMENTS
+	if cockpit.expanded_contact_support:
+		var previous_path: PackedVector3Array=cockpit.rig_clearance_path
+		cockpit.rig_clearance_path=contact_prepared.rope.path
+		cockpit._clear_loaded_rig_contact(raw,held)
+		cockpit.rig_clearance_path=previous_path
+	if candidate.has_method("set_material_budget"):
+		candidate.set_material_budget(budget,cockpit.floor_lay.minimum_path.slice(0,17),cockpit.material_floor_path)
+	var steps := LEAD_PREPARATION.new()
+	steps.begin(raw.slice(0,held+21),cockpit.floor_lay.minimum_path[0],actor,cockpit.hull,contact_prepared.rope.path,cockpit.expanded_contact_support)
+	contact_prepared["lead"]=candidate
+	contact_prepared["lead_steps"]=steps
+	contact_prepared["lead_holder"]=actor.sheet_control.regrip.time>=.8 and actor.sheet_control.regrip.time<2
+	contact_prepared["look_key"]=_contact_look_key()
+	_advance_contact_lead()
+
+func _advance_contact_lead() -> void:
+	var steps: RefCounted=contact_prepared.lead_steps
+	var started := Time.get_ticks_usec()
+	while Time.get_ticks_usec()-started<3000:
+		if not steps.advance(): continue
+		var candidate: RefCounted=contact_prepared.lead
+		candidate.history=steps.history
+		candidate.last_revision=steps.last_revision
+		candidate.last_pass_count=steps.last_pass_count
+		if candidate.has_method("set_material_budget"):
+			candidate.full_history=steps.result
+			candidate.rest_length=candidate._length(steps.history)
+			candidate.previous_cockpit=candidate.cockpit_length
+			candidate.previous_fixed_length=candidate._length(steps.fixed)
+			candidate.previous_holder=contact_prepared.lead_holder
+			candidate.contact_stretch={"supports":0.0,"self":0.0,"floor":0.0,"pushes":{}}
+		contact_task.stage="commit"
+		return
+
+func _advance_contact() -> void:
+	if not contact_busy(): return
+	if contact_ticket!=_contact_key(): _cancel_contact()
+	if contact_task.stage in ["snapshot_geometry","snapshot"]:
+		if contact_cancelled:
+			contact_task.stage=""
+			last_action={"valid":false,"cancelled":true,"reason":"contact snapshot cancelled"}
+			message="접촉 계산 취소 · 현재 조작과 표시를 유지했어요."
+		elif contact_task.stage=="snapshot_geometry":
+			var rig: Node3D=deck.complete_sheet.rig
+			for part in [rig.hull,rig.traveller,rig.traveller_lower]:
+				CONTACT_TASK.OBSTACLE.capture_tree(part,Transform3D.IDENTITY)
+			contact_task.stage="snapshot"
+		elif contact_task.start_block(_example_snapshot())!=OK:
+			contact_task.stage=""
+			last_action={"valid":false,"reason":"contact worker could not start"}
+		return
+	if contact_task.stage in ["cockpit","commit"]:
+		if contact_cancelled:
+			contact_task.stage=""
+			contact_prepared.clear()
+			last_action={"valid":false,"cancelled":true,"reason":"contact request cancelled or boundary changed"}
+			message="접촉 계산 취소 · 현재 조작과 표시를 유지했어요."
+		elif contact_task.stage=="cockpit" or contact_prepared.look_key!=_contact_look_key():
+			_prepare_contact_lead()
+		else:
+			contact_task.stage=""
+			last_action=show_deck_contact_example(true,contact_prepared)
+			solve_ms=(Time.get_ticks_usec()-contact_started_usec)/1000.0
+			contact_prepared.clear()
+		return
+	if not contact_task.ready(): return
+	var phase: String=contact_task.stage
+	var calculated: Dictionary=contact_task.take()
+	if contact_cancelled:
+		contact_prepared.clear()
+		last_action={"valid":false,"cancelled":true,"reason":"contact request cancelled or boundary changed"}
+		message="접촉 계산 취소 · 현재 조작과 표시를 유지했어요."
+		return
+	if not calculated.get("valid",false):
+		last_action=calculated
+		message="접촉 계산을 적용하지 않았어요. 현재 표시를 유지해요."
+		return
+	if phase=="block":
+		contact_prepared["block"]=calculated
+		var snapshot := _example_snapshot(calculated)
+		contact_prepared["boundary"]=snapshot.path
+		contact_prepared["target"]=snapshot.target
+		if contact_task.start_rope(snapshot)!=OK:
+			last_action={"valid":false,"reason":"rope worker could not start"}
+			message="줄 계산을 시작하지 못해 현재 표시를 유지했어요."
+		else: message="시트 접촉 계산 중 · 시점 이동 가능 / 조작하면 취소"
+	else:
+		contact_prepared["rope"]=calculated
+		contact_task.stage="cockpit"
+		message="접촉 결과 준비 중 · 시점 이동 가능 / 조작하면 취소"
+
+func _exit_tree() -> void:
+	contact_task.finish()
 
 func set_diagram(value: bool) -> void:
 	diagram_enabled=value
@@ -292,6 +640,8 @@ func _refresh_status() -> void:
 	if result.get("valid",false): details.text+="\n직전 해: 시트 %.2f N / 붐뱅 %.1f N · %.0f ms" % [result.sheet_tension_n,result.loads.cascade.boom_tension_n,solve_ms]
 	if is_finite(sheet.free_rig_yaw):
 		details.text+="\n중력 처짐 · 줄 자체 무게의 장력은 미포함"
+	if sheet.last_result.get("hull_supported",false):
+		details.text+="\n실제 갑판 메시 접촉 · 줄 길이 보존\n위 블록 정적 접촉 / 고리 표면 접촉은 미적용\n전체 마찰·실시간 이동 미연결"
 	if traveller_result.get("valid",false):
 		var names := {"stick":"마찰 유지","slip settled":"이동 후 정지","stop":"검수 경계 도달"}
 		details.text+="\n트래블러 %s / x %.3f m\n장착 줄 %.4f m" % [names.get(traveller_result.state,traveller_result.state),traveller_result.x,traveller_result.rest_length]
@@ -340,6 +690,7 @@ func _build_ui() -> void:
 	details.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	extra.add_child(details)
 	_button(extra,"처짐 예제 (트림·설정 변경)",func(): request_action("slack"))
+	_button(extra,"갑판 접촉 예제 (트림 변경)",func(): request_action("deck"))
 
 func show_traveller() -> void:
 	deck.set_view(8)
@@ -353,8 +704,10 @@ func _button(parent: Node,title: String,callback: Callable) -> void:
 
 func _failure_message(failure: Dictionary) -> String:
 	var reason: String=failure.get("reason","")
-	if "hull contact" in reason or "deck/support contact" in reason:
-		return "적용 불가 · 풀린 줄/블록의 갑판 지지 계산이 아직 없어요.\n현재 트림과 표시를 유지했어요. 줄을 조금 당기고 다시 계산해 주세요."
+	if "deck/support contact" in reason:
+		return "적용 불가 · 무하중 블록/트래블러의 갑판 지지는 아직 미지원이에요.\n현재 트림과 표시를 유지했어요. 줄을 조금 당기고 다시 계산해 주세요."
+	if "hull contact" in reason or "requires folds" in reason:
+		return "적용 불가 · 이 접촉에서는 줄 접힘이나 블록 위치 조정이 더 필요해요.\n현재 트림과 표시를 유지했어요."
 	if "allocation" in reason or "geometric domain" in reason:
 		return "적용 불가 · 이 트림에서는 요청 위치의 줄 길이/각도 조건이 맞지 않아요.\n현재 트림과 표시를 유지했어요. 시트를 조금 풀고 다시 시도해 주세요."
 	if "residual" in reason or "iteration" in reason:
