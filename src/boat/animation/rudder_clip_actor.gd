@@ -33,6 +33,7 @@ var pose_mirror := POSE_MIRROR.new()
 var extension_span := 1.10
 var hiking_sheet_grid: RefCounted
 var look_pose := LOOK_POSE.new()
+var seat_contact: RefCounted
 var look_enabled := false
 var neck_cap: MeshInstance3D
 var eye_offset := Vector3(0,.098772,.083336)
@@ -133,6 +134,9 @@ func set_amount(value: float) -> void:
 				var held := skeleton.get_bone_pose_rotation(bone)
 				var rest := skeleton.get_bone_rest(bone).basis.get_rotation_quaternion()
 				skeleton.set_bone_pose_rotation(bone, held.slerp(rest, 0.10 * grip_loosen))
+	if seat_contact!=null and not sheet_study.enabled:
+		look_pose.shoulder_follow_weight=0.0
+		seat_contact.apply()
 	if look_enabled:
 		# The relay clock is not the contact clock. Entry also moves the helper
 		# hand, so looking must use the contact phase actually sampled above.

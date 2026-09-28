@@ -34,8 +34,10 @@ func apply(skeleton: Skeleton3D, tiller_hand := "Right", helper_weight := 0.0) -
 		arms.append(poses)
 	# Both hands supporting the sheet constrain the trunk. The eyes can finish
 	# the glance while the neck stays bounded and the grips remain authored.
-	torso_yaw = signf(yaw)*MAX_TORSO_YAW*lerpf(1.0,.4,helper_weight)*smoothstep(deg_to_rad(35),MAX_YAW,absf(yaw))
-	var torso_pitch := signf(pitch)*deg_to_rad(10)*smoothstep(deg_to_rad(50),deg_to_rad(85),absf(pitch))
+	# Ordinary downward/sideward glances use the neck and eyes first. The
+	# trunk joins only near the look limit, where a seated person must turn.
+	torso_yaw = signf(yaw)*MAX_TORSO_YAW*lerpf(1.0,.4,helper_weight)*smoothstep(deg_to_rad(70),MAX_YAW,absf(yaw))
+	var torso_pitch := signf(pitch)*deg_to_rad(10)*smoothstep(deg_to_rad(75),deg_to_rad(85),absf(pitch))
 	shoulder_follow_weight = smoothstep(0.0,deg_to_rad(12),absf(torso_yaw)+absf(torso_pitch))
 	# A downward glance also uses the eyes; folding the full view angle into
 	# the neck drives the eye point through the shoulder at diagonal extremes.
@@ -59,7 +61,7 @@ func _set_basis(skeleton: Skeleton3D, bone: int, basis: Basis) -> void:
 	var local_basis := skeleton.get_bone_global_pose(parent).basis.inverse()*basis
 	skeleton.set_bone_pose_rotation(bone,local_basis.orthonormalized().get_rotation_quaternion())
 
-func _follow_shoulder(skeleton: Skeleton3D, side: String, original: Array, tiller_hand: String) -> void:
+func _follow_shoulder(skeleton: Skeleton3D, side: String, original: Array, tiller_hand: String, elbow_guide := Vector3(INF,INF,INF)) -> void:
 	var upper := skeleton.find_bone(side+"UpperArm")
 	var lower := skeleton.find_bone(side+"LowerArm")
 	var hand := skeleton.find_bone(side+"Hand")
@@ -88,9 +90,9 @@ func _follow_shoulder(skeleton: Skeleton3D, side: String, original: Array, tille
 	var axis := offset.normalized()
 	var along := (a*a-b*b+distance*distance)/(2*distance)
 	var center := shoulder+axis*along
-	var shoulder_basis := skeleton.get_bone_global_pose(upper).basis
-	var followed_elbow := shoulder+shoulder_basis*old_upper.basis.inverse()*(old_lower.origin-old_upper.origin)
-	var pole := followed_elbow-center
+	# A glance is not an arm action. Preserve the closest authored bend plane
+	# instead of orbiting the elbow with the chest and lifting it again.
+	var pole := (elbow_guide if elbow_guide.is_finite() else old_lower.origin)-center
 	pole -= axis*pole.dot(axis)
 	if pole.length_squared()<.000001: pole = axis.cross(Vector3.UP)
 	pole = pole.normalized()
@@ -98,8 +100,11 @@ func _follow_shoulder(skeleton: Skeleton3D, side: String, original: Array, tille
 	var hips := skeleton.get_bone_global_pose(skeleton.find_bone("Hips")).origin
 	var chest := skeleton.get_bone_global_pose(skeleton.find_bone("UpperChest")).origin
 	var outside := center-Geometry3D.get_closest_point_to_segment(center,hips,chest)
+	# Chest clearance is lateral; do not turn it into an upward elbow cue.
+	outside.y = 0.0
 	outside -= axis*outside.dot(axis)
-	if outside.length_squared()>.000001: pole = pole.lerp(outside.normalized(),.5*shoulder_follow_weight).normalized()
+	if outside.length_squared()>.000001:
+		pole = pole.lerp(outside.normalized(),.65*shoulder_follow_weight).normalized()
 	var radius := sqrt(maxf(0,a*a-along*along))
 	var preferred := -palm_direction+axis*palm_direction.dot(axis)
 	if radius*preferred.length()>.000001:

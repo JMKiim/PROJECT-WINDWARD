@@ -62,6 +62,8 @@ func _ready() -> void:
 	actor.name = "AuthoredSailor"
 	actor.extension_span = extension.tiller_extension_span()
 	add_child(actor)
+	actor.seat_contact=preload("res://src/boat/animation/seated_deck_contact.gd").new()
+	actor.seat_contact.setup(actor,get_node("Hull"))
 	actor.sheet_study.block_anchor = to_local(ratchet.rope_anchor_global(&"sheave"))
 	actor.sheet_study.floor_surface = get_node("Hull").cockpit_floor_y_at
 	actor.sheet_study.deck_fitting = ratchet
@@ -98,9 +100,12 @@ func _process(delta: float) -> void:
 	var started := Time.get_ticks_usec()
 	frame_ms = delta * 1000.0
 	var previous_hike: float = actor.hike
-	var input := float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
+	var input := Input.get_axis("steer_port", "steer_starboard")
 	if not is_zero_approx(input):
-		session.set_rudder(move_toward(actor.amount, input * actor.seat_side, delta * 1.5))
+		session.set_rudder(move_toward(actor.amount, -input * actor.seat_side, delta * 1.5))
+	var sheet_input := Input.get_axis("sheet_in", "sheet_out")
+	if not is_zero_approx(sheet_input):
+		session.input_sheet_wheel(-sheet_input * 30.0 * delta)
 	var hike_input := float(Input.is_physical_key_pressed(KEY_X)) - float(Input.is_physical_key_pressed(KEY_Z))
 	if not is_zero_approx(hike_input):
 		session.request_hike(session.requested_hike + hike_input * delta * 0.5)
@@ -277,9 +282,12 @@ func _update_first_person_camera() -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:
 		return
-	match event.keycode:
-		KEY_S:
+	var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
+	match key:
+		KEY_SPACE:
 			_stop_and_set(0.0)
+		KEY_C:
+			set_view(0 if selected_view == 3 else 3)
 		KEY_R:
 			reset_action()
 		KEY_8:
@@ -287,9 +295,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_H:
 			get_node("LabUI").visible = not get_node("LabUI").visible
 		KEY_1, KEY_2, KEY_3, KEY_4:
-			select_system(event.keycode - KEY_1)
+			select_system(key - KEY_1)
 		KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7:
-			set_view(event.keycode - KEY_F1)
+			set_view(key - KEY_F1)
 
 
 func _input(event: InputEvent) -> void:
@@ -369,6 +377,7 @@ func _release_mouse() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
 		_release_mouse()
+		session.wheel_pull.pause()
 
 
 func _exit_tree() -> void:

@@ -31,7 +31,7 @@ var mast: Node3D
 var sail: MeshInstance3D
 var result := {}
 var solve_ms := 0.0
-var message := "수동 조작 중 · 트래블러 검수 버튼으로 기준 연결부를 바로 볼 수 있어요."
+var message := "육상 연습 중 · 아래 계산은 별도의 정적 진단이에요."
 var solved_key := []
 var pending_action := ""
 var pending_background := true
@@ -537,7 +537,7 @@ func begin_purchase(example := false,contact_example := false) -> Dictionary:
 	if not deck.session.support_reason().is_empty(): return {"valid":false,"reason":"supported resting posture required"}
 	var steering := -.5 if contact_example else 0.0
 	if example and absf(deck.actor.amount-steering)>.000001:
-		message="기준 검수의 조타 조건이 달라요. 상단 검수 버튼으로 시작해 주세요."
+		message="기준 검수의 조타 조건이 달라요. 정밀 진단의 트래블러 계산으로 시작해 주세요."
 		return {"valid":false,"reason":"reference inspection steering mismatch"}
 	if not deck.complete_sheet.rig.coupled.is_empty():
 		message="현재 조건의 줄·블록 정적 평형이 적용되어 있어요. 조작하면 해제돼요."

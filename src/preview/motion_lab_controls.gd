@@ -16,6 +16,7 @@ var inspection_status: Label
 var inspect_button: Button
 var cancel_button: Button
 var manual_button: Button
+var diagnostic_bar: HBoxContainer
 var zoom_buttons: Array[Button] = []
 
 func build(value: Node3D) -> void:
@@ -35,7 +36,7 @@ func build(value: Node3D) -> void:
 	var stack := VBoxContainer.new()
 	panel.add_child(stack)
 	var row := _row(stack)
-	lab.main_title=_label("WINDWARD",row)
+	lab.main_title=_label("WINDWARD · 육상 연습",row)
 	lab.main_title.add_theme_font_size_override("font_size",20)
 	system_select=OptionButton.new()
 	system_select.focus_mode=Control.FOCUS_NONE
@@ -51,12 +52,14 @@ func build(value: Node3D) -> void:
 	zoom_buttons.append(_button("＋",func(): lab.zoom_inspection(2),row))
 	for button in zoom_buttons: button.tooltip_text="외부 시점 확대/축소 · Ctrl+휠로도 조절"
 	_button("시야 복원",lab.reset_view,row)
-	_button("설정",func(): show_drawer("rig"),row)
+	_button("정밀 진단",func(): show_drawer("rig"),row)
 	summary=_label("",row)
 	summary.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	summary.horizontal_alignment=HORIZONTAL_ALIGNMENT_RIGHT
-	row=_row(stack)
-	inspect_button=_button("트래블러 검수 · 트림 변경",func(): lab.rig_inspection.inspect_traveller(),row)
+	var inspection_row := _row(stack)
+	diagnostic_bar=inspection_row
+	row=inspection_row
+	inspect_button=_button("트래블러 계산 · 트림 변경",func(): lab.rig_inspection.inspect_traveller(),row)
 	inspect_button.tooltip_text="한 번 클릭: 중립 조타 → 25°/5 N 기준 연결부 계산 → 블록 확대. 전체 14 m 유지, 트림 배분 변경. 좌현·앉음 전용."
 	manual_button=_button("수동 조작",func(): lab.rig_inspection.clear_load(),row)
 	cancel_button=_button("취소",func(): lab.rig_inspection.cancel_request(),row)
@@ -64,7 +67,7 @@ func build(value: Node3D) -> void:
 	inspection_status.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	inspection_status.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
 	inspection_status.mouse_filter=Control.MOUSE_FILTER_PASS
-	input_hint=_label("휠↓ 당김 / ↑ 풀기 · Ctrl+휠 확대 · 우클릭 드래그 회전 · 휠버튼 드래그 이동 · A/D 러더 · Z/X 하이크 · Esc 커서",stack)
+	input_hint=_label("A/D 조타 · Space 중립 · W/S 또는 휠↓/↑ 시트 · C 1인칭 · 클릭 후 시선 / Esc 커서 · Z/X 하이크",stack)
 	input_hint.mouse_filter=Control.MOUSE_FILTER_IGNORE
 	input_hint.add_theme_font_size_override("font_size",15)
 	drawer=PanelContainer.new()
@@ -83,13 +86,15 @@ func build(value: Node3D) -> void:
 	_button("닫기",func(): drawer.hide(),content)
 	rig_column=VBoxContainer.new()
 	content.add_child(rig_column)
+	inspect_button.reparent(rig_column)
+	inspection_row.hide()
 	advanced_column=VBoxContainer.new()
 	content.add_child(advanced_column)
 	_label("자세 / 조작 상세",advanced_column)
 	row=_row(advanced_column)
 	_label("러더 A/D",row)
 	lab.slider=_slider(-1,1,.002,lab._stop_and_set,row)
-	_button("중립 [S]",func(): lab._stop_and_set(0.0),row)
+	_button("중립 [Space]",func(): lab._stop_and_set(0.0),row)
 	row=_row(advanced_column)
 	_label("하이크 Z/X",row)
 	lab.hike_slider=_slider(0,1,.01,lab._request_hike,row)
@@ -107,7 +112,7 @@ func build(value: Node3D) -> void:
 	support=_label("",advanced_column)
 	lab.status=_label("",advanced_column)
 	lab.sheet_status=_label("",advanced_column)
-	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.",advanced_column)
+	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\nCtrl+휠 확대 · 우드래그 회전 · 휠버튼 드래그 이동\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.\n조타 ±12°는 현 저작 범위이며 실물 최대각이 아니에요.",advanced_column)
 	for label in [support,lab.status,lab.sheet_status,lab.mode_hint]: label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	drawer.hide()
 	lab.get_viewport().size_changed.connect(_resize)
@@ -147,6 +152,7 @@ func refresh() -> void:
 		if preset!=null: preset.disabled=busy
 		cancel_button.visible=busy
 		manual_button.visible=not busy and (not lab.complete_sheet.rig.coupled.is_empty() or inspection.deck_contact_preview or lab.complete_sheet.rig.traveller_override.is_finite())
+		diagnostic_bar.visible=busy or manual_button.visible
 		inspection_status.text=inspection.message.replace("\n"," · ")
 		inspection_status.tooltip_text=inspection.message
 	_resize()
@@ -160,7 +166,8 @@ func refresh() -> void:
 	if not session.notice.is_empty(): support.text+="\n"+session.notice
 	var input=session.wheel_pull
 	var state := "대기" if input.state=="REST" else ("풀기" if "EASE" in input.state else "손 동작")
-	summary.text="%s · 회수 %.2f m" % [state,input.metres]
+	summary.text="조타 %+.0f° · %s · 회수 %.2f m" % [rad_to_deg(lab.actor.rudder_angle()),state,input.metres]
+	if absf(lab.actor.amount)>=.999: summary.text+=" · 저작 범위 끝"
 	if not reason.is_empty(): summary.text="선택 동작 미지원 · 상세 확인"
 	lab.sheet_status.text="트림 %.3f / 목표 %.3f m\n범위 %.3f~%.3f m · %s" % [input.metres,input.target_metres,input.minimum_metres,input.maximum_metres,input.state]
 	if input.length_budget!=null:
