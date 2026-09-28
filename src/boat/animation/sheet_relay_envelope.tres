@@ -4,14 +4,24 @@
 
 [resource]
 script = ExtResource("1_ixy83")
-minimum_rig_metres = 2.4206904221462318
+minimum_rig_metres = 2.40115012799995
 minimum_cockpit_metres = 1.1588544989004732
 maximum_held_metres = 1.0588544989004731
 fixed_end_metres = 0.23125006799818948
 free_end_metres = 0.2641051553655416
 source_signatures = {
 "res://src/boat/animation/sheet_relay_feed.tres": "5b72638c0402a3264f01fcce3c40a4f5d898c95a269c6091262d2bf4a821af79",
-"res://src/boat/ilca_training_rig.gd": "da3c85cc437abcd943bb21d9cf56d84639c0fc731cfe5968ad5e5ce4a1a2e662",
+"res://src/boat/cylinder_cable_route.gd": "3bbae122ed4c88162dbbc5a51d3003e2492de0cbdee54abec316fe024a78d0fb",
+"res://src/boat/fairlead_cable_route.gd": "0793b9ca0a7387174e96d013fc092f50b92f7906d2ddfe3483bf1b2c1ddf1a70",
+"res://src/boat/fairlead_profile_field.gd": "734607cb1cfa1b1b63fd4a6889922ca42de820c57503c83791b3d243717cf49e",
+"res://src/boat/ilca_hardware_part.gd": "bc9e9697e50a69fccd0cd20fefad28f82ef9cd641fdd6250c8ee3d2a24d81602",
+"res://src/boat/ilca_hull.gd": "43ac686d4b4d10722a10ca2630e8326564c763c82bd548be2f3ee2483a53bf18",
+"res://src/boat/ilca_training_rig.gd": "23a7147e93eb1651e6d6cc6a93013b6c6f682d22ae1a8a16991e206a48134204",
 "res://src/boat/mainsheet_stopper.gd": "2ea7c4951e3409feeeea3ff08c7c83daf4bedbe32c926c0bb5928e78b189faf7",
-"res://src/boat/training_sheave_block.gd": "9474409994a91fdf1d3eddf245aa0dcc3668a94348ccafe6c53c5101b9a21c73"
+"res://src/boat/rope_bowline.gd": "c491869919e53350d6d7fd4e275f5ad46351d23e787892a12b103e93920f986f",
+"res://src/boat/rope_path_curve.gd": "72e06e8d30547fa8257e671d9f5e05e1d5f1961b455b4abbb3a742aa67f87672",
+"res://src/boat/training_sheave_block.gd": "9474409994a91fdf1d3eddf245aa0dcc3668a94348ccafe6c53c5101b9a21c73",
+"res://src/boat/traveller_bowline.gd": "cbdf707610b8cb8546002dca3845f641bb012cbc4b688700c7765005b6177baf",
+"res://src/boat/traveller_fairlead.gd": "7f700bbc5f2f5693f145268ff7b2982de9370d269a1171a1db3d9f0099e47c94",
+"res://src/boat/traveller_supported_route.gd": "4abf5a8b679ede467c8ac09dc15862bd01b85576306029d37a42c491be441f92"
 }

@@ -9,6 +9,17 @@ const BLOCK_SUPPORT := preload("res://src/boat/traveller_block_support.gd")
 const CONTACT_TASK := preload("res://src/boat/deck_contact_task.gd")
 const SPATIAL_GUIDE := preload("res://src/boat/spatial_guide_state.gd")
 const LEAD_PREPARATION := preload("res://src/boat/supported_lead_preparation.gd")
+const PURCHASE_TASK := preload("res://src/boat/surface_purchase_task.gd")
+var purchase_task := PURCHASE_TASK.new()
+var purchase_ticket := []
+var purchase_pending := false
+var purchase_result := {}
+var purchase_example := false
+var purchase_example_angles := Vector2(deg_to_rad(25),deg_to_rad(-6))
+var inspection_preset := 0
+var purchase_applied_key := []
+var purchase_focus := false
+var purchase_focus_camera := Transform3D.IDENTITY
 var spatial_contact_enabled := true
 var deck: Node3D
 var solver: RefCounted
@@ -20,7 +31,7 @@ var mast: Node3D
 var sail: MeshInstance3D
 var result := {}
 var solve_ms := 0.0
-var message := "설정 후 '하중 평형 계산'을 눌러 주세요."
+var message := "수동 조작 중 · 트래블러 검수 버튼으로 기준 연결부를 바로 볼 수 있어요."
 var solved_key := []
 var pending_action := ""
 var pending_background := true
@@ -75,6 +86,7 @@ func prepare_geometry() -> void:
 	# Release a static example before the first changed-input geometry pass,
 	# not after paying for a supported solve that will be discarded anyway.
 	if deck_contact_preview and solved_key!=_boundary_key(): _leave_changed_static()
+	if not deck.complete_sheet.rig.coupled.is_empty() and purchase_applied_key!=_purchase_key(): _leave_changed_static()
 
 func _leave_changed_static() -> void:
 	var queued := pending_action
@@ -83,6 +95,10 @@ func _leave_changed_static() -> void:
 	message="조작 조건이 바뀌어 정적 검수를 해제했어요. 다시 계산해 주세요."
 
 func advance() -> void:
+	_advance_purchase()
+	if not purchase_result.is_empty() and deck.complete_sheet.rig.coupled.is_empty():
+		purchase_result.clear()
+		message="손·시점 조건이 바뀌어 일반 검수로 복귀했어요. 줄 길이는 유지해요."
 	_advance_contact()
 	if (deck.complete_sheet.rig.traveller_override.is_finite() or deck_contact_preview) and solved_key!=_boundary_key():
 		_leave_changed_static()
@@ -100,7 +116,7 @@ func advance() -> void:
 	_refresh_status()
 
 func request_action(action: String,background := true) -> Dictionary:
-	if action not in ["center","load","slack","deck"]:
+	if action not in ["center","load","purchase_example","purchase_contact","slack","deck"]:
 		return {"valid":false,"reason":"unknown inspection request"}
 	deck.session.wheel_pull.pause()
 	if deck.session.wheel_pull.state!="REST":
@@ -117,20 +133,40 @@ func request_action(action: String,background := true) -> Dictionary:
 		pending_action=action
 		pending_background=background
 		return {"valid":false,"queued":true,"reason":"wait for cancelled calculation"}
-	if deck_contact_preview and action in ["center","load"]: clear_load()
+	if deck_contact_preview and action in ["center","load","purchase_example","purchase_contact"]: clear_load()
+	if not deck.complete_sheet.rig.coupled.is_empty() and action!="load": clear_load()
 	match action:
 		"center": last_action=place_traveller_center()
-		"load": last_action=solve_traveller()
+		"load": last_action=begin_purchase()
+		"purchase_example": last_action=begin_purchase(true)
+		"purchase_contact": last_action=begin_purchase(true,true)
 		"slack": last_action=show_slack_example()
 		"deck": last_action=begin_deck_contact() if background else show_deck_contact_example()
 	_refresh_status()
 	return last_action.duplicate(true)
 
 func cancel_request() -> void:
+	purchase_focus=false
 	_cancel_contact()
+	purchase_pending=false
+	purchase_task.cancel()
 	pending_action=""
 	message="대기 요청을 취소했어요. 조작한 줄 길이는 유지해요."
 	_refresh_status()
+
+func inspect_traveller() -> void:
+	deck._release_mouse()
+	deck.controls.drawer.hide()
+	deck.set_view(8)
+	if not deck.session.sheet_pose_reason().is_empty():
+		message="블록 확대 · 기준 계산은 좌현·앉은 자세에서 가능해요. 설정에서 자세를 확인해 주세요."
+		_refresh_status()
+		return
+	deck.select_system(0)
+	deck._stop_and_set(-.5 if inspection_preset==1 else 0.0)
+	purchase_focus=true
+	purchase_focus_camera=deck.camera.transform
+	request_action("purchase_contact" if inspection_preset==1 else "purchase_example")
 
 func solve_load() -> Dictionary:
 	if deck.complete_sheet.rig.traveller_override.is_finite():
@@ -231,6 +267,7 @@ func place_traveller_center() -> Dictionary:
 	return applied
 
 func solve_traveller() -> Dictionary:
+	if not deck.complete_sheet.rig.coupled.is_empty(): clear_load()
 	if not _traveller_ready(): return {"valid":false,"reason":"wait for hand return"}
 	var sheet: Node3D=deck.complete_sheet
 	var previous := _traveller_snapshot()
@@ -261,6 +298,10 @@ func _boundary_key() -> Array:
 
 func clear_load() -> void:
 	_cancel_contact()
+	purchase_pending=false
+	purchase_task.cancel()
+	purchase_result.clear()
+	deck.complete_sheet.rig.release_purchase(false)
 	pending_action=""
 	deck_contact_preview=false
 	deck.complete_sheet.rig_constraint.spatial_guide_state=null
@@ -477,12 +518,112 @@ func begin_deck_contact() -> Dictionary:
 	return {"valid":false,"queued":true,"reason":"contact calculation in progress"}
 
 func _cancel_contact() -> void:
+	purchase_pending=false
+	purchase_task.cancel()
 	if contact_busy():
 		contact_cancelled=true
 		contact_task.cancel()
 
 func contact_busy() -> bool:
-	return contact_task.worker!=null or contact_task.stage in ["snapshot_geometry","snapshot","cockpit","commit"]
+	return purchase_pending or purchase_task.worker!=null or contact_task.worker!=null or contact_task.stage in ["snapshot_geometry","snapshot","cockpit","commit"]
+
+func _purchase_key() -> Array:
+	var sheet: Node3D=deck.complete_sheet
+	# Use the independent requested controls, not a reconstructed Euler angle
+	# after the temporary numeric snapshot round-trips a float32 basis.
+	return [_boundary_key(),sheet.requested_rig_pitch if is_finite(sheet.requested_rig_pitch) else "manual",sheet.free_rig_yaw if is_finite(sheet.free_rig_yaw) else "taut",deck.basis,deck.actor.rudder_angle(),deck.session.mode,deck.session.selected_system,deck.session.wheel_pull.state,deck.actor.look_enabled,deck.actor.look_pose.yaw,deck.actor.look_pose.pitch]
+
+func begin_purchase(example := false,contact_example := false) -> Dictionary:
+	if not deck.session.support_reason().is_empty(): return {"valid":false,"reason":"supported resting posture required"}
+	var steering := -.5 if contact_example else 0.0
+	if example and absf(deck.actor.amount-steering)>.000001:
+		message="기준 검수의 조타 조건이 달라요. 상단 검수 버튼으로 시작해 주세요."
+		return {"valid":false,"reason":"reference inspection steering mismatch"}
+	if not deck.complete_sheet.rig.coupled.is_empty():
+		message="현재 조건의 줄·블록 정적 평형이 적용되어 있어요. 조작하면 해제돼요."
+		return purchase_result.duplicate(true)
+	purchase_ticket=_purchase_key()
+	purchase_pending=true
+	purchase_example=example
+	purchase_example_angles=Vector2(deg_to_rad(45 if contact_example else 25),deg_to_rad(-6))
+	message="줄·블록 평형 계산 준비 중 · 조작/대기 취소 시 이전 표시 유지"
+	return {"valid":false,"queued":true,"reason":"purchase calculation queued"}
+
+func _advance_purchase() -> void:
+	if not purchase_pending and purchase_task.worker==null: return
+	if purchase_ticket!=_purchase_key():
+		purchase_pending=false
+		purchase_task.cancel()
+	if purchase_pending:
+		purchase_pending=false
+		var rig: Node3D=deck.complete_sheet.rig
+		var previous: Vector2=deck.complete_sheet.rig_constraint.angles()
+		if purchase_example: rig.set_angles(purchase_example_angles.x,purchase_example_angles.y,false)
+		var snapshot: Dictionary=rig.purchase_snapshot(5.0)
+		snapshot.load.gravity=rig.global_basis.inverse()*Vector3(0,-9.81,0)
+		if purchase_example: rig.set_angles(previous.x,previous.y,false)
+		if purchase_task.start(snapshot)!=OK:
+			last_action={"valid":false,"reason":"purchase worker could not start"}
+			message="계산을 시작하지 못해 이전 표시를 유지했어요."
+		else: message="줄·블록 평형/간섭 계산 중 · 시트 5 N 시험 하중 / 조작하면 취소"
+		return
+	if not purchase_task.ready(): return
+	var calculated: Dictionary=purchase_task.take()
+	if not calculated.get("accepted",false) or purchase_ticket!=_purchase_key():
+		last_action=calculated
+		var reason: String=calculated.get("reason","")
+		var description := "현재 조건에서 평형·정밀도 검사를 통과하지 못했어요."
+		if "finite geometry" in reason: description="줄·부품 간섭이 있어 접촉 평형이 더 필요한 조건이에요."
+		elif "cancel" in reason or purchase_ticket!=_purchase_key(): description="조건 변경 또는 취소 요청을 반영했어요."
+		message="새 평형 미적용 · 현재 조작과 표시 유지\n"+description
+		return
+	contact_ticket=_contact_key()
+	contact_cancelled=false
+	contact_prepared={"purchase":calculated,"rope":{"path":calculated.path},"target":calculated.rig_metres}
+	contact_task.stage="cockpit"
+	message="평형 통과 · 손·콕핏 줄 경로 준비 중 / 조작하면 취소"
+
+func _apply_purchase(calculated: Dictionary) -> Dictionary:
+	var sheet: Node3D=deck.complete_sheet
+	var before: float=sheet.ledger.rig_metres
+	var previous_angles: Vector2=sheet.rig_constraint.angles()
+	var transfer: float=before-calculated.rig_metres
+	if absf(sheet.ledger.transferable(transfer)-transfer)>.0000001:
+		message="콕핏 여유 줄이 부족해 적용하지 않았어요. 기존 트림 유지"
+		return {"valid":false,"reason":"complete material allocation rejected"}
+	var hands := [deck.actor.palm_boat("Left"),deck.actor.palm_boat("Right")]
+	var prior_lead: RefCounted=sheet.cockpit.supported_lead
+	# Keep the rollback history untouched while building the candidate tail.
+	sheet.cockpit.supported_lead=contact_prepared.get("lead",prior_lead.get_script().new())
+	sheet.ledger.transfer(transfer)
+	sheet.rig.set_angles(calculated.angles.x,calculated.angles.y,false)
+	calculated=calculated.duplicate(true)
+	calculated["hand_boundary"]=sheet.coupled_hand_boundary()
+	sheet.rig.install_purchase(calculated,false)
+	sheet.geometry_key.clear()
+	if not sheet.update_geometry(false):
+		sheet.rig.release_purchase(false)
+		sheet.rig.set_angles(previous_angles.x,previous_angles.y,false)
+		sheet.ledger.transfer(sheet.ledger.rig_metres-before)
+		sheet.cockpit.supported_lead=prior_lead
+		sheet.geometry_key.clear()
+		var restored: bool=sheet.update_geometry()
+		message="전체 줄 경로가 맞지 않아 이전 상태로 복원했어요."
+		return {"valid":false,"reason":"complete cockpit rejected purchase","restore_failed":not restored}
+	sheet.update_geometry(true)
+	deck.session.wheel_pull.bind_length_budget(sheet.ledger)
+	purchase_result=calculated.duplicate(true)
+	purchase_result["hand_pose_unchanged"]=hands==[deck.actor.palm_boat("Left"),deck.actor.palm_boat("Right")]
+	solved_key=_boundary_key()
+	purchase_applied_key=_purchase_key()
+	# Reframe the newly moved pair only if the user has not navigated while
+	# waiting. Camera-only input must neither cancel nor restart the solve.
+	if purchase_focus and deck.selected_view==8 and deck.camera.transform==purchase_focus_camera:
+		deck.set_view(8)
+	purchase_focus=false
+	message="줄·블록 정적 평형 적용 · 전체 14 m\n콕핏 배분 %+.3f m · 시트 5 N 시험\n조작하면 일반 검수로 복귀" % transfer
+	deck.controls.refresh()
+	return purchase_result.duplicate(true)
 
 func _contact_look_key() -> Array:
 	return [deck.actor.look_enabled,deck.actor.look_pose.yaw,deck.actor.look_pose.pitch]
@@ -541,7 +682,9 @@ func _advance_contact_lead() -> void:
 		return
 
 func _advance_contact() -> void:
-	if not contact_busy(): return
+	# The purchase worker has its own ticket. Do not cancel it by comparing
+	# an unrelated, inactive deck-contact ticket with the current scene.
+	if contact_task.worker==null and contact_task.stage not in ["snapshot_geometry","snapshot","cockpit","commit"]: return
 	if contact_ticket!=_contact_key(): _cancel_contact()
 	if contact_task.stage in ["snapshot_geometry","snapshot"]:
 		if contact_cancelled:
@@ -567,7 +710,7 @@ func _advance_contact() -> void:
 			_prepare_contact_lead()
 		else:
 			contact_task.stage=""
-			last_action=show_deck_contact_example(true,contact_prepared)
+			last_action=_apply_purchase(contact_prepared.purchase) if contact_prepared.has("purchase") else show_deck_contact_example(true,contact_prepared)
 			solve_ms=(Time.get_ticks_usec()-contact_started_usec)/1000.0
 			contact_prepared.clear()
 		return
@@ -599,6 +742,7 @@ func _advance_contact() -> void:
 
 func _exit_tree() -> void:
 	contact_task.finish()
+	purchase_task.finish()
 
 func set_diagram(value: bool) -> void:
 	diagram_enabled=value
@@ -633,11 +777,14 @@ func _display_deformation() -> void:
 
 func _refresh_status() -> void:
 	if status==null: return
+	deck.controls.refresh()
 	var sheet: Node3D=deck.complete_sheet
 	var q: Vector2=sheet.rig_constraint.angles()
 	status.text=message
 	details.text="전체 %.3f m · 길이 오차 %.3f mm\n붐 좌우 %.2f° / 높이 %.2f°" % [sheet.ledger.total_metres,sheet.last_result.get("total_error_metres",0.0)*1000,rad_to_deg(q.x),rad_to_deg(q.y)]
 	if result.get("valid",false): details.text+="\n직전 해: 시트 %.2f N / 붐뱅 %.1f N · %.0f ms" % [result.sheet_tension_n,result.loads.cascade.boom_tension_n,solve_ms]
+	if not sheet.rig.coupled.is_empty():
+		details.text+="\n하부/상부·붐 뒤 정적 평형 · %.2f N\n트래블러 전체 %.6f m · 표시 오차 %.3f mm\n블록 지지 반력 %.3f N · 뒤 구간129표본\n아이 안쪽 줄은 기하 경로 / 마찰·안정성·동역학 미인증" % [purchase_result.support_tension,purchase_result.traveller_material_metres,purchase_result.traveller_render_error_m*1000,purchase_result.get("lower_contact_n",0.0)]
 	if is_finite(sheet.free_rig_yaw):
 		details.text+="\n중력 처짐 · 줄 자체 무게의 장력은 미포함"
 	if sheet.last_result.get("hull_supported",false):
@@ -645,7 +792,7 @@ func _refresh_status() -> void:
 	if traveller_result.get("valid",false):
 		var names := {"stick":"마찰 유지","slip settled":"이동 후 정지","stop":"검수 경계 도달"}
 		details.text+="\n트래블러 %s / x %.3f m\n장착 줄 %.4f m" % [names.get(traveller_result.state,traveller_result.state),traveller_result.x,traveller_result.rest_length]
-	details.text+="\n정적 시험 / 실시간 항해 미적용\n질량·마찰·±0.455 m 한계는 잠정.\n세일/마스트는 변형 도식, 손 조작 미연결."
+	details.text+="\n정적 시험 / 실시간 항해 미적용\n연결부 치수·질량은 잠정, 시트 5 N 검수용.\n기존 세일 진단의 마찰·±0.455 m 한계는 별도.\n세일/마스트는 변형 도식, 손 조작 미연결."
 
 func _build_ui() -> void:
 	var column: VBoxContainer=deck.controls.rig_column
@@ -654,21 +801,26 @@ func _build_ui() -> void:
 	status.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(status)
 	var settings := Label.new()
-	settings.text="설정 변경 후 계산 · 시트 길이는 그대로 유지"
+	settings.text="연결부 검수: 5 N 시험 하중 · 전체 줄 14 m 유지"
 	column.add_child(settings)
+	var preset := OptionButton.new()
+	preset.name="TravellerCondition"
+	preset.focus_mode=Control.FOCUS_NONE
+	preset.add_item("기준: 붐 25° · 중립 조타")
+	preset.add_item("접촉: 붐 45° · 조타 −6°")
+	preset.tooltip_text="상단 검수 버튼이 이 조건을 준비해요. 트림과 조타가 바뀌며 5 N 정적 시험이에요."
+	preset.item_selected.connect(func(index: int):
+		inspection_preset=index
+		deck.controls.refresh())
+	column.add_child(preset)
 	var row := HBoxContainer.new()
 	column.add_child(row)
-	for entry in [["중앙 배치",func(): request_action("center")],["하중 계산",func(): request_action("load")]]:
+	for entry in [["연결부 확인 (트림 변경)",inspect_traveller],["현재 조건 계산",func(): request_action("load")]]:
 		_button(row,entry[0],entry[1])
 	row=HBoxContainer.new()
 	column.add_child(row)
 	_button(row,"정적 검수 해제",clear_load)
 	_button(row,"대기 취소",cancel_request)
-	_slider(column,"붐뱅 회수량 (m)",-.15,.45,0)
-	_slider(column,"바람 X 성분 (m/s)",0,8,5)
-	_slider(column,"선체 기울기 (°)",-25,25,0)
-	_slider(column,"상하 가속도 (m/s²)",-2,2,0)
-	_slider(column,"트래블러 정지 마찰 (잠정)",0,1,.2)
 	row=HBoxContainer.new()
 	column.add_child(row)
 	_button(row,"전체 리그 보기",show_rig)
@@ -689,8 +841,18 @@ func _build_ui() -> void:
 	details=Label.new()
 	details.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	extra.add_child(details)
+	var legacy := Label.new()
+	legacy.text="아래 설정: 기존 세일 하중 진단 전용"
+	extra.add_child(legacy)
+	_slider(extra,"붐뱅 회수량 (m)",-.15,.45,0)
+	_slider(extra,"바람 X 성분 (m/s)",0,8,5)
+	_slider(extra,"선체 기울기 (°)",-25,25,0)
+	_slider(extra,"상하 가속도 (m/s²)",-2,2,0)
+	_slider(extra,"트래블러 정지 마찰 (잠정)",0,1,.2)
+	_button(extra,"기존 트래블러 중앙 배치",func(): request_action("center"))
 	_button(extra,"처짐 예제 (트림·설정 변경)",func(): request_action("slack"))
 	_button(extra,"갑판 접촉 예제 (트림 변경)",func(): request_action("deck"))
+	_button(extra,"기존 세일 하중 진단",solve_traveller)
 
 func show_traveller() -> void:
 	deck.set_view(8)

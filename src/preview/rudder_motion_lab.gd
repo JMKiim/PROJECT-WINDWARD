@@ -50,6 +50,10 @@ var look_yaw := 0.0
 const MOUSE_LOOK_RADIANS := .0025
 var inspection_yaw := 0.0
 var inspection_pitch := 0.0
+var inspection_target := Vector3.ZERO
+var inspection_drag := 0
+const INSPECTION_MIN_DISTANCE := .065
+const INSPECTION_MAX_DISTANCE := 30.0
 
 
 func _ready() -> void:
@@ -169,17 +173,52 @@ func set_side(side: int) -> void:
 
 
 func set_view(index: int, reset_look: bool = true) -> void:
-	if index < 0 or index > 8:
+	if index < 0 or index > 9:
+		return
+	# Posture refreshes must not discard an inspector's zoom, orbit or pan.
+	if index == selected_view and index != 3 and not reset_look:
 		return
 	if reset_look:
 		inspection_yaw = 0.0
 		inspection_pitch = 0.0
 	_set_view_base(index, reset_look)
 	if index != 3:
-		var turn := Basis(Vector3.UP, inspection_yaw) * Basis(camera.basis.x, inspection_pitch)
-		camera.basis = turn * camera.basis
+		inspection_target = _view_target(index)
+		_update_inspection_near()
 	if controls.lab != null:
 		controls.refresh()
+
+func _view_target(index: int) -> Vector3:
+	if index == 7: return Vector3(0,3.8,0)
+	if index == 8 and complete_sheet != null:
+		var rig: Node3D = complete_sheet.rig
+		var lower: Node3D = rig.traveller_lower if rig.coupled.is_empty() else rig.coupled_parts.lower
+		var upper: Node3D = rig.traveller if rig.coupled.is_empty() else rig.coupled_parts.upper
+		return to_local((lower.global_position + upper.global_position) * .5)
+	if index >= 8: return Vector3(0,.30,1.82)
+	if index == 6: return actor.from_port(Vector3(-.39,.84,.72)+Vector3(-.60,-.08,0)*float(actor.hike))
+	if index >= 4: return actor.palm_boat(actor.sheet_hand() if index == 4 else actor.tiller_hand())
+	return actor.from_port(Vector3(-.25,.80+.10*actor.hike,.65)+Vector3(-.30,0,0)*float(actor.hike))
+
+func inspection_distance() -> float:
+	return camera.position.distance_to(inspection_target)
+
+func zoom_inspection(notches: float) -> void:
+	if selected_view == 3 or not is_finite(notches): return
+	var distance := clampf(inspection_distance()*exp(clampf(-notches*.16,-8,8)),INSPECTION_MIN_DISTANCE,INSPECTION_MAX_DISTANCE)
+	camera.position = inspection_target + camera.basis.z * distance
+	_update_inspection_near()
+	if controls.lab != null: controls.refresh()
+
+func pan_inspection(pixels: Vector2) -> void:
+	if selected_view == 3 or not pixels.is_finite(): return
+	var scale := 2.0*inspection_distance()*tan(deg_to_rad(camera.fov)*.5)/maxf(1,get_viewport().get_visible_rect().size.y)
+	var offset := (-camera.basis.x*pixels.x+camera.basis.y*pixels.y)*scale
+	inspection_target += offset
+	camera.position += offset
+
+func _update_inspection_near() -> void:
+	camera.near = clampf(inspection_distance()*.015,.001,.04)
 
 
 func _set_view_base(index: int, reset_look: bool) -> void:
@@ -187,9 +226,11 @@ func _set_view_base(index: int, reset_look: bool) -> void:
 	actor.set_first_person(index == 3)
 	camera.near = 0.025 if index >= 3 else 0.04
 	if index>=7:
-		camera.position=Vector3(11,6,-8) if index==7 else Vector3(-1.2,1.1,3.3)
-		camera.look_at(to_global(Vector3(0,3.8,0) if index==7 else Vector3(.08,.34,1.85)),global_basis*Vector3.UP)
-		camera.fov=48
+		var target := _view_target(index)
+		camera.position=Vector3(11,6,-8) if index==7 else target+Vector3(.32,.20,.36)
+		if index==9: camera.position=Vector3(0,2.05,2.40)
+		camera.look_at(to_global(target),global_basis*Vector3.UP)
+		camera.fov=42 if index==8 else 48
 		return
 	if index == 3:
 		if reset_look:
@@ -253,20 +294,32 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED or inspection_drag != 0:
 			_release_mouse()
 			get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseMotion:
-		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		if inspection_drag != 0 and selected_view != 3:
+			if inspection_drag == MOUSE_BUTTON_MIDDLE: pan_inspection(event.relative)
+			else: apply_mouse_look(event.relative)
+			get_viewport().set_input_as_handled()
+		elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			# Screen-relative pixels avoid viewport stretch and frame-rate scaling.
 			apply_mouse_look(event.screen_relative)
 			get_viewport().set_input_as_handled()
 		return
 	# Visible panels own pointer input; trim remains available over the scene.
 	# Selectors keep their wheel events while their popup is open.
-	if not event is InputEventMouseButton or not event.pressed:
+	if not event is InputEventMouseButton:
 		return
+	if event.button_index in [MOUSE_BUTTON_RIGHT,MOUSE_BUTTON_MIDDLE]:
+		if not event.pressed:
+			if inspection_drag == event.button_index: inspection_drag = 0
+		elif selected_view != 3 and not controls.pointer_over_ui(event.position):
+			inspection_drag = event.button_index
+			get_viewport().set_input_as_handled()
+		return
+	if not event.pressed: return
 	if event.button_index == MOUSE_BUTTON_LEFT:
 		if not controls.pointer_over_ui(event.position) and get_viewport().gui_get_hovered_control() == null:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -283,6 +336,10 @@ func _input(event: InputEvent) -> void:
 	if not is_finite(event.factor) or event.factor < 0.0:
 		return
 	var notches: float = event.factor if event.factor > 0.0 else 1.0
+	if event.ctrl_pressed:
+		zoom_inspection(notches if event.button_index == MOUSE_BUTTON_WHEEL_UP else -notches)
+		get_viewport().set_input_as_handled()
+		return
 	session.input_sheet_wheel(notches if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -notches,event.shift_pressed,Time.get_ticks_usec()/1000000.0)
 	get_viewport().set_input_as_handled()
 	controls.refresh()
@@ -293,13 +350,18 @@ func apply_mouse_look(pixels: Vector2) -> void:
 	if selected_view == 3:
 		look_yaw = clampf(look_yaw - pixels.x * MOUSE_LOOK_RADIANS, -actor.LOOK_POSE.MAX_YAW, actor.LOOK_POSE.MAX_YAW)
 		look_pitch = clampf(look_pitch + pixels.y * MOUSE_LOOK_RADIANS, deg_to_rad(-60), deg_to_rad(85))
+		set_view(selected_view, false)
 	else:
+		var pitch := clampf(inspection_pitch-pixels.y*MOUSE_LOOK_RADIANS,-1.45,1.45)
+		var turn := Basis(Vector3.UP,-pixels.x*MOUSE_LOOK_RADIANS)*Basis(camera.basis.x,pitch-inspection_pitch)
+		camera.position = inspection_target+turn*(camera.position-inspection_target)
+		camera.basis = (turn*camera.basis).orthonormalized()
 		inspection_yaw = wrapf(inspection_yaw - pixels.x * MOUSE_LOOK_RADIANS, -PI, PI)
-		inspection_pitch = clampf(inspection_pitch - pixels.y * MOUSE_LOOK_RADIANS, -1.2, 1.2)
-	set_view(selected_view, false)
+		inspection_pitch = pitch
 
 
 func _release_mouse() -> void:
+	inspection_drag = 0
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 

@@ -12,6 +12,11 @@ var advanced_column: VBoxContainer
 var drawer_scroll: ScrollContainer
 var summary: Label
 var toolbar: PanelContainer
+var inspection_status: Label
+var inspect_button: Button
+var cancel_button: Button
+var manual_button: Button
+var zoom_buttons: Array[Button] = []
 
 func build(value: Node3D) -> void:
 	lab=value
@@ -39,16 +44,27 @@ func build(value: Node3D) -> void:
 	row.add_child(system_select)
 	view_select=OptionButton.new()
 	view_select.focus_mode=Control.FOCUS_NONE
-	for title in ["사선 [F1]","정면 [F2]","위 [F3]","1인칭 [F4]","시트 손 [F5]","러더 손 [F6]","팔 [F7]","전체 리그","선미 확대"]: view_select.add_item(title)
+	for title in ["사선 [F1]","정면 [F2]","위 [F3]","1인칭 [F4]","시트 손 [F5]","러더 손 [F6]","팔 [F7]","전체 리그","트래블러 블록","선미 전체"]: view_select.add_item(title)
 	view_select.item_selected.connect(lab.set_view)
 	row.add_child(view_select)
-	_button("트림 리셋 [R]",lab.reset_action,row)
-	_button("리깅",func(): show_drawer("rig"),row)
-	_button("상세",func(): show_drawer("advanced"),row)
+	zoom_buttons.append(_button("−",func(): lab.zoom_inspection(-2),row))
+	zoom_buttons.append(_button("＋",func(): lab.zoom_inspection(2),row))
+	for button in zoom_buttons: button.tooltip_text="외부 시점 확대/축소 · Ctrl+휠로도 조절"
+	_button("시야 복원",lab.reset_view,row)
+	_button("설정",func(): show_drawer("rig"),row)
 	summary=_label("",row)
 	summary.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	summary.horizontal_alignment=HORIZONTAL_ALIGNMENT_RIGHT
-	input_hint=_label("휠↓ 당기기 / ↑ 풀기 · A/D 러더 · Z/X 하이크 · 클릭 시선 / Esc 커서 · H 화면 숨김",stack)
+	row=_row(stack)
+	inspect_button=_button("트래블러 검수 · 트림 변경",func(): lab.rig_inspection.inspect_traveller(),row)
+	inspect_button.tooltip_text="한 번 클릭: 중립 조타 → 25°/5 N 기준 연결부 계산 → 블록 확대. 전체 14 m 유지, 트림 배분 변경. 좌현·앉음 전용."
+	manual_button=_button("수동 조작",func(): lab.rig_inspection.clear_load(),row)
+	cancel_button=_button("취소",func(): lab.rig_inspection.cancel_request(),row)
+	inspection_status=_label("",row)
+	inspection_status.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	inspection_status.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
+	inspection_status.mouse_filter=Control.MOUSE_FILTER_PASS
+	input_hint=_label("휠↓ 당김 / ↑ 풀기 · Ctrl+휠 확대 · 우클릭 드래그 회전 · 휠버튼 드래그 이동 · A/D 러더 · Z/X 하이크 · Esc 커서",stack)
 	input_hint.mouse_filter=Control.MOUSE_FILTER_IGNORE
 	input_hint.add_theme_font_size_override("font_size",15)
 	drawer=PanelContainer.new()
@@ -85,6 +101,7 @@ func build(value: Node3D) -> void:
 	advanced_column.add_child(follow_button)
 	row=_row(advanced_column)
 	_button("시야 초기화",lab.reset_view,row)
+	_button("트림 리셋 [R]",lab.reset_action,row)
 	_button("전체 초기화",lab.reset_scenario,row)
 	_button("설정 복사",func(): DisplayServer.clipboard_set(JSON.stringify(lab.inspection_snapshot(),"\t")),row)
 	support=_label("",advanced_column)
@@ -97,8 +114,9 @@ func build(value: Node3D) -> void:
 	_resize()
 
 func _resize() -> void:
-	var height: float=lab.get_viewport().get_visible_rect().size.y
-	drawer.size.y=maxf(200,minf(590,height-120))
+	var size: Vector2=lab.get_viewport().get_visible_rect().size
+	drawer.position.y=maxf(144,toolbar.get_global_rect().end.y+12)
+	drawer.size=Vector2(minf(490,size.x-24),maxf(200,minf(590,size.y-drawer.position.y-12)))
 
 func pointer_over_ui(point: Vector2) -> bool:
 	# Input callbacks run before GUI delivery. Use visible panel bounds instead
@@ -113,12 +131,25 @@ func show_drawer(kind: String) -> void:
 		drawer.hide()
 		return
 	rig_column.visible=kind=="rig"
-	advanced_column.visible=kind=="advanced"
+	advanced_column.visible=true
 	drawer_scroll.scroll_vertical=0
 	drawer.show()
 
 func refresh() -> void:
 	var session=lab.session
+	for button in zoom_buttons: button.disabled=lab.selected_view==3
+	if lab.rig_inspection!=null:
+		var inspection: Node3D=lab.rig_inspection
+		var busy: bool=inspection.contact_busy() or not inspection.pending_action.is_empty()
+		inspect_button.disabled=busy
+		inspect_button.tooltip_text="한 번 클릭: 조타 −6° → 붐 45°/5 N 실제 접촉 계산 → 블록 확대. 약 35초, 전체 14 m 유지. 트림·조타 변경." if inspection.inspection_preset==1 else "한 번 클릭: 중립 조타 → 25°/5 N 기준 연결부 계산 → 블록 확대. 전체 14 m 유지, 트림 배분 변경. 좌현·앉음 전용."
+		var preset := rig_column.get_node_or_null("TravellerCondition") as OptionButton
+		if preset!=null: preset.disabled=busy
+		cancel_button.visible=busy
+		manual_button.visible=not busy and (not lab.complete_sheet.rig.coupled.is_empty() or inspection.deck_contact_preview or lab.complete_sheet.rig.traveller_override.is_finite())
+		inspection_status.text=inspection.message.replace("\n"," · ")
+		inspection_status.tooltip_text=inspection.message
+	_resize()
 	system_select.select(session.selected_system)
 	view_select.select(lab.selected_view)
 	follow_button.set_pressed_no_signal(lab.follow_work_area)

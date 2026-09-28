@@ -23,6 +23,9 @@ const FORWARD_BLOCK_FROM_END := 1.653
 const GUIDE_FROM_END := 1.047
 const TRAVELLER_FROM_TRANSOM := .2625
 const TRAVELLER_HALF_SPAN := .500
+const FAIRLEAD_ROUTE := preload("res://src/boat/fairlead_cable_route.gd")
+const TRAVELLER_KNOT := preload("res://src/boat/traveller_bowline.gd")
+const TRAVELLER_SUPPORT := preload("res://src/boat/traveller_supported_route.gd")
 const LOADED_TRAVELLER_X := .455
 # Separate mounting eye below the spar; its detailed height is provisional.
 const BOOM_EYE_DROP := .016
@@ -65,6 +68,8 @@ var traveller_control: Node3D
 var traveller_control_path := PackedVector3Array()
 var traveller_cleat: MeshInstance3D
 var traveller_nipping := PackedVector3Array()
+var traveller_fairlead_cache := {}
+var traveller_fairlead_valid := false
 var traveller_returning := PackedVector3Array()
 var traveller_handle := PackedVector3Array()
 var traveller_rope_key := Vector4(INF,INF,INF,INF)
@@ -151,10 +156,10 @@ func setup(floor_mesh: MeshInstance3D, deck_block: MeshInstance3D) -> void:
 	traveller_cleat = _part("TravellerCleat",HARDWARE.PartKind.TRAVELLER_CLEAT,Vector3(0,hull.deck_y_at(0,1.465),1.465),self)
 	# A mirrored bowline joins the two return legs. Its full eye is the line
 	# through both fairleads and the lower block, not a separate decorative ring.
-	var tie := Vector3(-.390,0,1.775)
+	var tie := Vector3(0,0,1.660)
 	var frame := Basis(Vector3.LEFT,Vector3.UP,Vector3.BACK)
-	traveller_nipping=BOWLINE.placed(BOWLINE.nipping(),tie,frame)
-	traveller_returning=BOWLINE.placed(BOWLINE.returning(),tie,frame)
+	traveller_nipping=BOWLINE.placed(TRAVELLER_KNOT.nipping(),tie,frame)
+	traveller_returning=BOWLINE.placed(TRAVELLER_KNOT.returning(),tie,frame)
 	var joined := traveller_nipping.duplicate()
 	joined.append_array(traveller_returning)
 	var lift := _deck_lift(joined)
@@ -351,21 +356,24 @@ func _update_traveller(display := false) -> void:
 		if display: _draw_traveller()
 		return
 	traveller_rope_key=rope_key
-	var port := _anchor(get_node("PortTravellerEye"))
-	var starboard := _anchor(get_node("StarboardTravellerEye"))
-	var port_aft := port+Vector3(0,0,.021)
-	var starboard_aft := starboard+Vector3(0,0,.021)
 	var small := _anchor(traveller_lower)
-	_align_block(traveller_lower,small,starboard_aft,port_aft,Vector3.UP)
-	var approaching := _traveller_support(starboard_aft,small)
-	var crossing := _traveller_support(small,port_aft)
-	var traveller_incoming := approaching[-1] if not approaching.is_empty() else starboard_aft
-	var traveller_outgoing := crossing[0] if not crossing.is_empty() else port_aft
-	_align_block(traveller_lower,small,traveller_incoming,traveller_outgoing,Vector3.UP)
+	var patches := traveller_fairlead_patches(small)
+	traveller_fairlead_valid=not patches.is_empty()
+	if not traveller_fairlead_valid: return
+	var port_patch: PackedVector3Array=patches.port
+	var starboard_patch: PackedVector3Array=patches.starboard
+	var port_aft := port_patch[-1]
+	var starboard_aft := starboard_patch[-1]
+	var rear := TRAVELLER_SUPPORT.route({"port":port_aft,"starboard":starboard_aft,"tiller":traveller_tiller_frame(),"tiller_radius":.0161,"tiller_half_span":.490,"sheave_radius":.0125-minf(HARDWARE.BLOCK_GROOVE_DEPTH,.009*.43*.873)+.0033},small)
+	if not rear.valid:
+		traveller_fairlead_valid=false
+		return
+	# Tiller tangencies depend on the actual sheave entry/exit, not its
+	# centre. Iterate those shared points together, including at full helm.
+	_align_axis(traveller_lower,small,rear.frame.basis.x,rear.frame.basis.y)
 	# One continuous material path between the two free tails: handle, cleat,
 	# nipping turn, large traveller eye, returning strands, collar and short tail.
-	var starboard_front := starboard-Vector3(0,0,.021)
-	var port_front := port-Vector3(0,0,.021)
+	var starboard_front := starboard_patch[0]
 	var cleat_entry := traveller_cleat.position+Vector3(0,.020,.020)
 	var cleat_exit := traveller_cleat.position+Vector3(0,.018,-.025)
 	var cleat_approach := traveller_cleat.position+Vector3(0,.018,.060)
@@ -374,15 +382,33 @@ func _update_traveller(display := false) -> void:
 	traveller_path.append_array(PackedVector3Array([traveller_cleat.position+Vector3(.040,.013,-.080),traveller_cleat.position+Vector3(0,.018,-.070),cleat_exit,cleat_entry,cleat_approach]))
 	traveller_path.append_array(traveller_nipping)
 	traveller_path.append_array(_traveller_support(traveller_nipping[-1],starboard_front,true))
-	traveller_path.append_array(PackedVector3Array([starboard_front,starboard,starboard_aft]))
-	traveller_path.append_array(approaching)
-	_append_wrap(traveller_path,small,.0125-minf(HARDWARE.BLOCK_GROOVE_DEPTH,.009*.43*.873)+.0033,traveller_incoming,traveller_outgoing)
-	traveller_path.append_array(crossing)
-	traveller_path.append_array(PackedVector3Array([port_aft,port,port_front]))
-	traveller_path.append_array(traveller_returning)
+	# Round only the authored knot/cleat tail, never the finite contact patch.
 	traveller_path=CURVE.round_corners(traveller_path,.012)
+	traveller_path.append_array(starboard_patch)
+	traveller_path.append_array(rear.path.slice(1))
+	port_patch=port_patch.duplicate()
+	port_patch.reverse()
+	traveller_path.append_array(port_patch.slice(1))
+	traveller_path.append_array(traveller_returning)
 	traveller_control_path=PackedVector3Array()
 	if display: _draw_traveller()
+
+func traveller_fairlead_patches(small: Vector3) -> Dictionary:
+	# The manual rig keeps its established lower datum. Resolve the fitting
+	# geometry once for each loaded side, not during every steering/frame or
+	# thousands of measured sheet-envelope samples. This is geometric manual
+	# routing, not certification of frictionless fairlead reaction forces.
+	if traveller_fairlead_cache.has(small): return traveller_fairlead_cache[small]
+	var result := {}
+	for side in ["port","starboard"]:
+		var eye: Node3D=get_node("PortTravellerEye" if side=="port" else "StarboardTravellerEye")
+		var front: Vector3=traveller_returning[0] if side=="port" else traveller_nipping[-1]
+		var candidate := FAIRLEAD_ROUTE.settled(eye.transform,front,small,PackedVector3Array(),80)
+		var patch := FAIRLEAD_ROUTE.contact_patch(candidate,eye.transform)
+		if patch.is_empty(): return {}
+		result[side]=patch
+	traveller_fairlead_cache[small]=result
+	return result
 
 func _draw_traveller() -> void:
 	traveller_view.show_path(traveller_path)

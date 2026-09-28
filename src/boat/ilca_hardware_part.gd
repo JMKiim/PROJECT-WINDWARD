@@ -48,6 +48,7 @@ const BLOCK_GROOVE_HALF_WIDTH := 0.0055
 const DECK_LEAD_PREFIX_POINTS := 26
 const TRAVELLER_MAIN_SHEAVE_DIAMETER := 0.040
 const TRAVELLER_LINE_SHEAVE_DIAMETER := 0.025
+const TRAVELLER_FAIRLEAD := preload("res://src/boat/traveller_fairlead.gd")
 # The linked blocks articulate at right angles: the small sheave follows the
 # deck traveller and the large sheave follows the vertical mainsheet purchase.
 const TRAVELLER_LINE_SHEAVE_CENTER := Vector3(-0.002, 0.0, 0.0)
@@ -103,7 +104,7 @@ func rope_anchor_local(anchor_name: StringName = &"sheave") -> Vector3:
 		PartKind.BOOM_END_FITTING:
 			return Vector3(0.0, 0.025, -0.012)
 		PartKind.TRAVELLER_FAIRLEAD:
-			return Vector3(0.0, 0.025, 0.0)
+			return Vector3(0.0, 0.0095, 0.0)
 		PartKind.TRAVELLER_CLEAT:
 			return Vector3(0.0, 0.028, -0.008)
 		PartKind.GOOSENECK:
@@ -959,14 +960,13 @@ func set_tiller_extension_grip_distance(distance: float) -> void:
 
 
 func _build_traveller_fairlead() -> void:
-	_add_box("PlasticBase",Vector3(.072,.005,.021),Vector3(0,.0025,0),_black)
-	# Rounded open bridge with two real fasteners; keep the established lead
-	# datum so this housing change does not alter the mainsheet trim range.
-	for index in 24:
-		var a := PI*index/24.0
-		var b := PI*(index+1)/24.0
-		_add_tube_between("FairleadArch",Vector3(cos(a)*.025,.008+sin(a)*.027,0),Vector3(cos(b)*.025,.008+sin(b)*.027,0),.0045,_black)
-	for x: float in [-.030,.030]: _fitting_screw("FairleadScrew",Vector3(x,.006,0),Vector3.UP)
+	var body := MeshInstance3D.new()
+	body.name="FairleadBody"
+	body.mesh=TRAVELLER_FAIRLEAD.mesh()
+	body.material_override=_black
+	add_child(body)
+	for side in [-1.0,1.0]:
+		_fitting_screw("FairleadScrew",Vector3(side*TRAVELLER_FAIRLEAD.SCREW_CENTRES*.5,TRAVELLER_FAIRLEAD.SEAT_Y+.00075,0),Vector3.UP)
 
 
 func _build_traveller_cleat() -> void:

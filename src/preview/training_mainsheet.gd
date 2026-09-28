@@ -2,7 +2,7 @@ extends Node3D
 
 ## One material ledger connects the complete purchase, authored hand travel,
 ## gravity-supported cockpit lead and both finite end knots.
-const RIG := preload("res://src/boat/ilca_training_rig.gd")
+const RIG := preload("res://src/boat/surface_training_rig.gd")
 const COCKPIT := preload("res://src/boat/mainsheet_cockpit.gd")
 const LEDGER := preload("res://src/boat/animation/mainsheet_length_budget.gd")
 const FEED := preload("res://src/boat/animation/sheet_remote_feed_profile.tres")
@@ -83,15 +83,20 @@ func setup(value: Node3D) -> bool:
 func update_geometry(display := true) -> bool:
 	if not configured: return false
 	var actor: Node3D = lab.actor
+	if not rig.coupled.is_empty() and rig.coupled.get("hand_boundary",[])!=coupled_hand_boundary():
+		rig.release_purchase(false)
+		geometry_key.clear()
 	var key := [actor.sheet_study.manual_revision,ledger.rig_metres,ledger.cockpit_metres,actor.amount,actor.seat_side,actor.hike,actor.sheet_control.work,actor.sheet_control.regrip_time,actor.sheet_control.weight,actor.sheet_control.slip,actor.sheet_study.gravity_boat(),actor.extension_span,actor.hiking_sheet_grid,cockpit.expanded_contact_support]
 	key.append_array([actor.look_enabled,actor.look_pose.yaw,actor.look_pose.pitch])
 	key.append(requested_rig_pitch if is_finite(requested_rig_pitch) else "legacy")
 	key.append_array([free_rig_yaw if is_finite(free_rig_yaw) else "taut",free_rig_gravity])
 	key.append(rig.traveller_override if rig.traveller_override.is_finite() else "fixed traveller")
 	key.append(rig.traveller_pose_override if rig.traveller_pose_locked else "loaded block")
+	key.append(rig.coupled)
 	if key==geometry_key and last_result.get("valid",false):
 		if display:
-			if is_finite(free_rig_yaw):
+			if not rig.coupled.is_empty(): rig._show_coupled(true)
+			elif is_finite(free_rig_yaw):
 				rig.rope_view.show_static_path(rig.route,last_result.get("surface_arrays",[]))
 				rig.fixed_view.show_path(rig.fixed_end)
 			elif is_finite(requested_rig_pitch):
@@ -102,7 +107,10 @@ func update_geometry(display := true) -> bool:
 		return true
 	var lead: PackedVector3Array = actor.sheet_control.regrip.held_points() if actor.sheet_control.regrip_time>=0 else actor.sheet_study.manual_held_points()
 	rig.set_cockpit_lead(lead)
-	if is_finite(free_rig_yaw):
+	if not rig.coupled.is_empty():
+		rig._show_coupled(display)
+		last_result={"valid":absf(rig.length_metres()-ledger.rig_metres)<=.00005,"coupled_static":true}
+	elif is_finite(free_rig_yaw):
 		# Hauling first consumes excess length at the unloaded equilibrium; once
 		# taut, retain the same pitch and solve the exact length constraint.
 		rig.set_angles(free_rig_yaw,requested_rig_pitch,false)
@@ -130,6 +138,10 @@ func update_geometry(display := true) -> bool:
 	geometry_key = key
 	if display: _show_cockpit(path)
 	return last_result.valid
+
+func coupled_hand_boundary() -> Array:
+	var actor: Node3D=lab.actor
+	return [actor.amount,actor.seat_side,actor.hike,actor.sheet_control.work,actor.sheet_control.weight,actor.sheet_control.regrip_time,actor.sheet_control.slip,actor.extension_span,actor.look_enabled,actor.look_pose.yaw,actor.look_pose.pitch,actor.sheet_study.gravity_boat()]
 
 func try_rig_pitch(pitch: float,display := true) -> Dictionary:
 	# A geometry request never consumes either line or rewrites authored poses.
