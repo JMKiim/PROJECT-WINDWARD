@@ -24,6 +24,10 @@ var floor_material_rate := 0.0
 var hand_shells := []
 var held_link_bounds := []
 var floor_samples := {}
+var rest_boundary := []
+var rest_stable_seconds := 0.0
+var stationary_seconds := 0.0
+var sleeping := false
 
 func set_material_budget(value: float,entry: PackedVector3Array,laid: PackedVector3Array) -> void:
 	cockpit_length = value
@@ -67,6 +71,10 @@ func reset() -> void:
 	previous_cockpit = NAN
 	rest_length = 0.0
 	floor_material_rate = 0.0
+	rest_boundary.clear()
+	rest_stable_seconds = 0.0
+	stationary_seconds = 0.0
+	sleeping = false
 
 func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshInstance3D,rig_path: PackedVector3Array = PackedVector3Array(),expanded_contacts := false) -> PackedVector3Array:
 	var began := Time.get_ticks_usec()
@@ -77,6 +85,20 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	var fixed_length := _length(fixed)
 	var helper: bool = actor.sheet_control.regrip.time>=.8 and actor.sheet_control.regrip.time<2
 	var dt: float = clampf(actor.sheet_study.manual_delta,0,.067)
+	var boundary := [fixed,ground,cockpit_length,helper,rig_path,actor.sheet_study.gravity_boat(),actor.sheet_control.slip,actor.sheet_study._tail_supports()]
+	var stationary := _same_boundary(boundary)
+	if not stationary:
+		rest_stable_seconds=0.0
+		stationary_seconds=0.0
+		sleeping=false
+		rest_boundary=boundary
+	elif last_revision!=actor.sheet_study.manual_revision: stationary_seconds+=dt
+	if sleeping and not full_history.is_empty():
+		last_revision=actor.sheet_study.manual_revision
+		floor_material_rate=0.0
+		last_pass_count=0
+		last_timings={"prepare_ms":(Time.get_ticks_usec()-began)/1000.0,"retained_ms":0.0,"contact_ms":0.0,"bound_ms":0.0,"reference_used":false,"sleeping":true}
+		return full_history
 	if full_history.is_empty():
 		full_history = super.build(prefix,ground,actor,hull,rig_path,expanded_contacts)
 		history = full_history.slice(fixed_count-1)
@@ -108,6 +130,11 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 		if prior_distances[index]>shape_offset+.000001: retained.append(full_history[index])
 	if retained.size()<2: retained.append(ground)
 	retained = _densify(_simplify(retained,.00025),.035)
+	# At a fixed material boundary, retain the same vertices. Repeatedly
+	# appending floor material and remeshing a resting span pumps small waves
+	# into it even when both hands and the line budget are motionless.
+	if stationary and absf(feed)<.0000001 and not history.is_empty():
+		retained=history.duplicate()
 	var distances := _distances(retained)
 	var attachment := fixed[-1]-retained[0]
 	# Spread endpoint motion over the hanging span. Concentrating a 19mm
@@ -121,16 +148,20 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	var down: Vector3 = actor.sheet_study.gravity_boat()
 	var first := fixed[-1]+tangent*.08+Vector3(float(actor.seat_side)*.07,0,0)
 	var second := ground-down*.25
-	var follow := 1-exp(-5.0*dt)
+	# With fixed endpoints, dissipate the guide's relaxation instead of
+	# driving it against contact projections forever. Contacts still run
+	# until the clear route settles; any real boundary change restores motion.
+	var settle_weight := exp(-8*maxf(0,stationary_seconds-.35))
+	var follow := (1-exp(-5.0*dt))*settle_weight
 	for index in range(1,curve.size()-1):
 		var t := distances[index]/maxf(.00001,distances[-1])
 		var u := 1-t
 		var guide := fixed[-1]*u*u*u+first*3*u*u*t+second*3*u*t*t+ground*t*t*t
 		curve[index] = curve[index].lerp(guide,follow)
 	var unsmoothed := curve.duplicate()
-	var smooth_weight := 1-exp(-12.0*dt)
+	var smooth_weight := (1-exp(-12.0*dt))*settle_weight
 	for index in range(1,curve.size()-1): curve[index] = curve[index].lerp((unsmoothed[index-1]+unsmoothed[index+1])*.5,smooth_weight)
-	var supports: Array = actor.sheet_study._tail_supports()
+	var supports: Array = boundary[7].duplicate()
 	var span_bounds := _group_bounds(curve,0,curve.size()-1).grow(.15)
 	hand_shells.clear()
 	# A loaded haul keeps its real open channels. Slip blends the loose-line
@@ -202,6 +233,12 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	rest_length = _length(curve)
 	last_rest_error = 0.0
 	floor_material_rate = (transported-rest_length)/maxf(dt,.000001)
+	var rest_step := INF
+	if stationary and history.size()==curve.size():
+		rest_step=0.0
+		for index in curve.size(): rest_step=maxf(rest_step,curve[index].distance_to(history[index]))
+	rest_stable_seconds=rest_stable_seconds+dt if rest_step<.00001 else 0.0
+	sleeping=rest_stable_seconds>=.25
 	history = curve
 	full_history = fixed.duplicate()
 	full_history.append_array(curve.slice(1))
@@ -211,6 +248,30 @@ func build(prefix: PackedVector3Array,ground: Vector3,actor: Node3D,hull: MeshIn
 	last_revision = actor.sheet_study.manual_revision
 	last_timings = {"prepare_ms":(prepared-began)/1000.0,"retained_ms":(retained_done-contacts_done)/1000.0,"contact_ms":(contacts_done-prepared)/1000.0,"bound_ms":(Time.get_ticks_usec()-retained_done)/1000.0,"reference_used":needs_reference}
 	return full_history
+
+func _same_boundary(boundary: Array) -> bool:
+	if boundary.size()!=rest_boundary.size(): return false
+	if not _same_path(boundary[0],rest_boundary[0]) or not _same_path(boundary[4],rest_boundary[4]): return false
+	if boundary[1].distance_squared_to(rest_boundary[1])>25e-12: return false
+	if absf(boundary[2]-rest_boundary[2])>.000005 or boundary[3]!=rest_boundary[3]: return false
+	if boundary[5].distance_squared_to(rest_boundary[5])>1e-12 or absf(boundary[6]-rest_boundary[6])>.000001: return false
+	if boundary[7].size()!=rest_boundary[7].size(): return false
+	# Reapplying the same bone rotations has sub-micrometre float noise.
+	# Compare with the last real boundary, not the previous frame, so a slow
+	# deliberate motion cannot accumulate unnoticed. Contact tolerances stay
+	# unchanged and all material, holder, rig and gravity changes wake it.
+	for index in boundary[7].size():
+		var a: Array=boundary[7][index]
+		var b: Array=rest_boundary[7][index]
+		if a[2]!=b[2] or a[0].distance_squared_to(b[0])>25e-12 or a[1].distance_squared_to(b[1])>25e-12: return false
+	return true
+
+func _same_path(a: PackedVector3Array,b: PackedVector3Array) -> bool:
+	if a==b: return true
+	if a.size()!=b.size(): return false
+	for index in a.size():
+		if a[index].distance_squared_to(b[index])>25e-12: return false
+	return true
 
 func _bound_material(curve: PackedVector3Array,reference: PackedVector3Array,prior: PackedVector3Array,distances: PackedFloat32Array,offset: float,transported: float,dt: float,supports: Array,support_bounds: Array) -> bool:
 	if _within_budget(curve,prior,distances,offset,transported,dt): return false

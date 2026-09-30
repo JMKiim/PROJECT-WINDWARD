@@ -3,7 +3,7 @@ extends RefCounted
 ## A bounded look layer over the authored pose. Hand targets and fingers stay
 ## authored; a closed-form two-link adjustment follows the moving shoulders.
 const MAX_YAW := deg_to_rad(110.0)
-const MAX_TORSO_YAW := deg_to_rad(20.0)
+const MAX_TORSO_YAW := deg_to_rad(8.0)
 var yaw := 0.0
 var pitch := 0.0
 var eye_pitch := 0.0
@@ -37,7 +37,7 @@ func apply(skeleton: Skeleton3D, tiller_hand := "Right", helper_weight := 0.0) -
 	# Ordinary downward/sideward glances use the neck and eyes first. The
 	# trunk joins only near the look limit, where a seated person must turn.
 	torso_yaw = signf(yaw)*MAX_TORSO_YAW*lerpf(1.0,.4,helper_weight)*smoothstep(deg_to_rad(70),MAX_YAW,absf(yaw))
-	var torso_pitch := signf(pitch)*deg_to_rad(10)*smoothstep(deg_to_rad(75),deg_to_rad(85),absf(pitch))
+	var torso_pitch := signf(pitch)*deg_to_rad(2)*smoothstep(deg_to_rad(75),deg_to_rad(85),absf(pitch))
 	shoulder_follow_weight = smoothstep(0.0,deg_to_rad(12),absf(torso_yaw)+absf(torso_pitch))
 	# A downward glance also uses the eyes; folding the full view angle into
 	# the neck drives the eye point through the shoulder at diagonal extremes.
@@ -96,15 +96,8 @@ func _follow_shoulder(skeleton: Skeleton3D, side: String, original: Array, tille
 	pole -= axis*pole.dot(axis)
 	if pole.length_squared()<.000001: pole = axis.cross(Vector3.UP)
 	pole = pole.normalized()
-	# Bias the elbow away from the rotated chest, within the same wrist cone.
-	var hips := skeleton.get_bone_global_pose(skeleton.find_bone("Hips")).origin
-	var chest := skeleton.get_bone_global_pose(skeleton.find_bone("UpperChest")).origin
-	var outside := center-Geometry3D.get_closest_point_to_segment(center,hips,chest)
-	# Chest clearance is lateral; do not turn it into an upward elbow cue.
-	outside.y = 0.0
-	outside -= axis*outside.dot(axis)
-	if outside.length_squared()>.000001:
-		pole = pole.lerp(outside.normalized(),.65*shoulder_follow_weight).normalized()
+	# Keep the nearest authored elbow plane inside the same wrist cone;
+	# chest clearance is checked independently.
 	var radius := sqrt(maxf(0,a*a-along*along))
 	var preferred := -palm_direction+axis*palm_direction.dot(axis)
 	if radius*preferred.length()>.000001:

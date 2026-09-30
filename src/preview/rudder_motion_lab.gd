@@ -18,6 +18,7 @@ const RIG_INSPECTION := preload("res://src/preview/rig_coupling_lab.gd")
 @export var irregular_floor_enabled := false
 @export var hiking_sheet_controls_enabled := false
 @export var continuous_sheet_enabled := false
+@export var wide_steering_enabled := false
 @export var embedded_controls := false
 @export_range(.50,1.50,.01) var extension_tube_metres := 1.070
 var complete_sheet: Node3D
@@ -58,7 +59,7 @@ const INSPECTION_MAX_DISTANCE := 30.0
 
 func _ready() -> void:
 	_create_stage()
-	actor = ACTOR.new()
+	actor = load("res://src/boat/animation/wide_steering_actor.gd").new() if wide_steering_enabled else ACTOR.new()
 	actor.name = "AuthoredSailor"
 	actor.extension_span = extension.tiller_extension_span()
 	add_child(actor)

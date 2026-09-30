@@ -163,7 +163,7 @@ func inspect_traveller() -> void:
 		_refresh_status()
 		return
 	deck.select_system(0)
-	deck._stop_and_set(-.5 if inspection_preset==1 else 0.0)
+	deck._stop_and_set(_inspection_steering(inspection_preset==1))
 	purchase_focus=true
 	purchase_focus_camera=deck.camera.transform
 	request_action("purchase_contact" if inspection_preset==1 else "purchase_example")
@@ -533,9 +533,13 @@ func _purchase_key() -> Array:
 	# after the temporary numeric snapshot round-trips a float32 basis.
 	return [_boundary_key(),sheet.requested_rig_pitch if is_finite(sheet.requested_rig_pitch) else "manual",sheet.free_rig_yaw if is_finite(sheet.free_rig_yaw) else "taut",deck.basis,deck.actor.rudder_angle(),deck.session.mode,deck.session.selected_system,deck.session.wheel_pull.state,deck.actor.look_enabled,deck.actor.look_pose.yaw,deck.actor.look_pose.pitch]
 
+func _inspection_steering(contact_example: bool) -> float:
+	var limit := preload("res://src/boat/animation/wide_steering_config.gd").DEGREES if deck.wide_steering_enabled else 12.0
+	return -6.0/limit if contact_example else 0.0
+
 func begin_purchase(example := false,contact_example := false) -> Dictionary:
 	if not deck.session.support_reason().is_empty(): return {"valid":false,"reason":"supported resting posture required"}
-	var steering := -.5 if contact_example else 0.0
+	var steering := _inspection_steering(contact_example)
 	if example and absf(deck.actor.amount-steering)>.000001:
 		message="기준 검수의 조타 조건이 달라요. 정밀 진단의 트래블러 계산으로 시작해 주세요."
 		return {"valid":false,"reason":"reference inspection steering mismatch"}

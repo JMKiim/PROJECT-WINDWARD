@@ -22,6 +22,10 @@ func setup(value: Node3D) -> bool:
 	deck = DECK.instantiate()
 	deck.name = "SeatedDeck"
 	deck.embedded_controls = true
+	# Production dynamics still use the original twelve-degree bridge.
+	# The wider authored deck is validated separately before that migration.
+	deck.wide_steering_enabled = false
+	deck.extension_tube_metres = 1.070
 	add_child(deck)
 	if deck.complete_sheet==null or not deck.complete_sheet.configured: return false
 	var rig: Node3D = deck.complete_sheet.rig

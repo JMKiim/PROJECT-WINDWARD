@@ -110,8 +110,8 @@ func set_amount(value: float) -> void:
 	amount = clampf(value, -1.0, 1.0)
 	if sheet_study != null and sheet_study.enabled:
 		amount = 0.0
-	var coordinate := hike * (HIKE.LEVELS - 1)
-	var low := mini(int(coordinate), HIKE.LEVELS - 2)
+	var coordinate := hike * (_hike_playback_levels() - 1)
+	var low := mini(int(coordinate), _hike_playback_levels() - 2)
 	for layer in LAYOUT.LAYERS:
 		var tree: AnimationTree = trees[layer]
 		var graph := tree.tree_root as AnimationNodeBlendTree
@@ -152,6 +152,9 @@ func set_amount(value: float) -> void:
 
 func _clip_name(side: int, level: int) -> String:
 	return LAYOUT.side_name(side) + ("" if level == 0 else "_hike%d" % level)
+
+func _hike_playback_levels() -> int:
+	return HIKE.LEVELS
 
 
 func set_hike(value: float) -> void:

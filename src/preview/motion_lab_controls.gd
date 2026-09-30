@@ -112,7 +112,8 @@ func build(value: Node3D) -> void:
 	support=_label("",advanced_column)
 	lab.status=_label("",advanced_column)
 	lab.sheet_status=_label("",advanced_column)
-	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\nCtrl+휠 확대 · 우드래그 회전 · 휠버튼 드래그 이동\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.\n조타 ±12°는 현 저작 범위이며 실물 최대각이 아니에요.",advanced_column)
+	var range_hint := "조타 ±24° · 1,250mm 익스텐션\n검증된 동작 범위이며 실물 최대각은 아니에요." if lab.wide_steering_enabled else "조타 ±12°는 현 저작 범위이며 실물 최대각이 아니에요."
+	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\nCtrl+휠 확대 · 우드래그 회전 · 휠버튼 드래그 이동\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.\n"+range_hint,advanced_column)
 	for label in [support,lab.status,lab.sheet_status,lab.mode_hint]: label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	drawer.hide()
 	lab.get_viewport().size_changed.connect(_resize)

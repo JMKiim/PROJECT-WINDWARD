@@ -26,6 +26,10 @@ func capture(bones: PackedInt32Array, side: int) -> Dictionary:
 	return result
 
 func apply_sample(bones: PackedInt32Array, before: Dictionary, side: int, weight: float) -> void:
+	# A full-weight source-side sample is already the exact desired pose.
+	# Converting its unchanged rotations to matrices and back on every frame
+	# accumulates finger drift and keeps resting contact geometry awake.
+	if side==-1 and weight>=1.0: return
 	var sampled: Array[Transform3D] = []
 	for bone in bones: sampled.append(skeleton.get_bone_pose(bone))
 	# Sampling a port track temporarily writes the source arm. Restore it as

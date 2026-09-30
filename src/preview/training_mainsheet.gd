@@ -37,6 +37,11 @@ func setup(value: Node3D) -> bool:
 		if not ResourceLoader.exists(reserve_path): return false
 		length_envelope = load(reserve_path)
 		motion_profile = load("res://src/boat/animation/sheet_relay_feed.tres")
+		if lab.wide_steering_enabled:
+			var wide := preload("res://src/boat/animation/wide_steering_config.gd")
+			if not ResourceLoader.exists(wide.ENVELOPE) or not ResourceLoader.exists(wide.FEED): return false
+			length_envelope=load(wide.ENVELOPE)
+			motion_profile=load(wide.FEED)
 		lab.actor.sheet_control.use_continuous_relay()
 		cockpit.supported_lead = load("res://src/boat/mainsheet_material_lead.gd").new()
 	if expanded:
