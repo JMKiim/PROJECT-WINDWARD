@@ -53,14 +53,15 @@ Windward는 **바람과 세일, 그리고 사람의 움직임이 하나로 이�
 
 ### 조작 검수 모드 · 최신 개발 장면
 
-Godot **4.7.1**에서 `project.godot`을 연 뒤, [`src/preview/rudder_motion_lab.tscn`](src/preview/rudder_motion_lab.tscn)을 선택하고 편집기에서 **F6**으로 실행합니다. 기본 상태는 **좌현 · 앉은 자세 · 메인시트**입니다.
+Godot **4.7.1**에서 `project.godot`을 연 뒤, [`src/preview/rudder_motion_lab.tscn`](src/preview/rudder_motion_lab.tscn)을 선택하고 편집기에서 **F6**으로 실행합니다. 기본 상태는 **좌현 · 앉은 자세 · 메인시트**이며, 별도 비교 버튼 없이 바로 조작할 수 있습니다.
 
 | 입력 | 동작 |
 | :--- | :--- |
 | 마우스 휠 ↓ / ↑ | 메인시트 당기기 / 풀기 |
+| `W` / `S` | 메인시트 당기기 / 풀기 |
 | Shift + 마우스 휠 | 큰 폭으로 시트 조절 |
 | `A` / `D` | 러더 조작 — 시트 조작과 함께 사용 가능 |
-| `S` | 러더 중립 |
+| `Space` | 러더 중립 |
 | `F4` / `F1` | 1인칭 / 외부 시점 |
 | 화면 클릭 → 마우스 이동 | 시선 조작 |
 | `Esc` | 커서 해제 |
@@ -69,6 +70,8 @@ Godot **4.7.1**에서 `project.godot`을 연 뒤, [`src/preview/rudder_motion_la
 | **상세 → 전체 초기화** | 기본 검수 상태로 복귀 |
 
 휠 한두 칸은 미세 조절이며 빠르게 연속 회전하면 조절량과 손동작 속도가 함께 증가합니다. 멈추거나 방향을 바꾸면 미세 조절로 돌아옵니다. Shift+휠은 고정된 큰 폭 조절입니다. 커서가 풀려 있을 때는 슬라이더나 선택 메뉴 밖에서 휠을 사용하세요.
+
+현재 검수 모드는 손에 잡힌 줄 구간을 중심으로 표시합니다. 바닥에 놓인 전체 줄의 움직임과 접촉 표현은 아직 개발 중입니다.
 
 <details>
 <summary>추가 검수 조작과 현재 지원 범위</summary>
@@ -89,7 +92,7 @@ Godot **4.7.1**에서 `project.godot`을 연 뒤, [`src/preview/rudder_motion_la
 <details>
 <summary>항해 프로토타입 · 편집기 F5 실행</summary>
 
-기본 실행 장면은 [`src/main/main.tscn`](src/main/main.tscn)입니다. 검수 모드와 같은 기본 손동작을 사용하며, 시트를 조절하면 세일과 배의 반응으로 이어집니다.
+기본 실행 장면은 [`src/main/main.tscn`](src/main/main.tscn)입니다. 시트를 조절하면 세일과 배의 반응으로 이어집니다. 검수 모드의 최신 손동작과 표시 개선이 모두 반영된 상태는 아닙니다.
 
 | 입력 | 동작 |
 | :--- | :--- |

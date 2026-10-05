@@ -1,23 +1,4 @@
-extends RefCounted
-
-var lab: Node3D
-var system_select: OptionButton
-var view_select: OptionButton
-var follow_button: CheckButton
-var support: Label
-var input_hint: Label
-var rig_column: VBoxContainer
-var drawer: PanelContainer
-var advanced_column: VBoxContainer
-var drawer_scroll: ScrollContainer
-var summary: Label
-var toolbar: PanelContainer
-var inspection_status: Label
-var inspect_button: Button
-var cancel_button: Button
-var manual_button: Button
-var diagnostic_bar: HBoxContainer
-var zoom_buttons: Array[Button] = []
+extends "res://src/preview/land_drill/support/motion_lab_controls_base.gd"
 
 func build(value: Node3D) -> void:
 	lab=value
@@ -61,8 +42,14 @@ func build(value: Node3D) -> void:
 	row=inspection_row
 	inspect_button=_button("트래블러 계산 · 트림 변경",func(): lab.rig_inspection.inspect_traveller(),row)
 	inspect_button.tooltip_text="한 번 클릭: 중립 조타 → 25°/5 N 기준 연결부 계산 → 블록 확대. 전체 14 m 유지, 트림 배분 변경. 좌현·앉음 전용."
+	if lab.has_method("supports_rig_diagnostics") and not lab.supports_rig_diagnostics():
+		inspect_button.disabled=true
+		inspect_button.tooltip_text="전체 자유 줄의 접촉 검증 후 다시 연결할 진단이에요."
+		for index in range(7,10): view_select.set_item_disabled(index,true)
 	manual_button=_button("수동 조작",func(): lab.rig_inspection.clear_load(),row)
 	cancel_button=_button("취소",func(): lab.rig_inspection.cancel_request(),row)
+	manual_button.hide()
+	cancel_button.hide()
 	inspection_status=_label("",row)
 	inspection_status.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	inspection_status.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -113,6 +100,8 @@ func build(value: Node3D) -> void:
 	lab.status=_label("",advanced_column)
 	lab.sheet_status=_label("",advanced_column)
 	var range_hint := "조타 ±24° · 1,250mm 익스텐션\n검증된 동작 범위이며 실물 최대각은 아니에요." if lab.wide_steering_enabled else "조타 ±12°는 현 저작 범위이며 실물 최대각이 아니에요."
+	if lab.has_method("supports_rig_diagnostics") and not lab.supports_rig_diagnostics():
+		range_hint+="\n전체 자유 줄 표시는 접촉 검증 중이에요."
 	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\nCtrl+휠 확대 · 우드래그 회전 · 휠버튼 드래그 이동\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.\n"+range_hint,advanced_column)
 	for label in [support,lab.status,lab.sheet_status,lab.mode_hint]: label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	drawer.hide()

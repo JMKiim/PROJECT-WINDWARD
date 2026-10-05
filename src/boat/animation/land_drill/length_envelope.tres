@@ -1,0 +1,15 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://src/boat/animation/training_sheet_envelope.gd" id="1_txdqn"]
+
+[resource]
+script = ExtResource("1_txdqn")
+minimum_rig_metres = 2.4003808770319446
+minimum_cockpit_metres = 1.1226807293947787
+maximum_held_metres = 1.0226807293947786
+fixed_end_metres = 0.23125006799818948
+free_end_metres = 0.2641051553655416
+metadata/actual_authored_bank_sha256 = "03e792be789112980153c96e514db29002c264e2bc5a796354e519da8db367b3"
+metadata/actual_feed_sha256 = "58bb3f90298f86320ee769ab208da6aadba700e1fb3b2b89e92e4f220e9395ae"
+metadata/actual_runtime_player_sha256 = "ac624b720feebdef38a86ca357dfca1bf54b9efeb3f884b714b44e46063b3b54"
+metadata/original_world_hand_reference_sha256 = "4718775913010e5cfd0b46fca93495fb3957af974b49c45de3302f6dfd486327"

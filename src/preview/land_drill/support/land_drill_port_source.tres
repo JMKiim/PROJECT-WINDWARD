@@ -1,0 +1,12 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/preview/land_drill/support/land_drill_pose_source.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+regrip_fraction = 0.34
+helper_lift = Vector3(0.02, 0.20, 0.26)
+return_reach_window = Vector2(0.0, 0.72)
+return_close_window = Vector2(0.55, 1.0)
+return_normal_lane = 0.10
+return_side_lane = 0.08
