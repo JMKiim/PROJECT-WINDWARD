@@ -1,10 +1,13 @@
 extends "res://src/preview/land_drill/support/rudder_motion_lab.gd"
-const DIRECT_ACTOR := preload("res://src/preview/land_drill_runtime_actor.gd")
-const DIRECT_SHEET := preload("res://src/preview/land_drill_runtime_sheet.gd")
+const DIRECT_ACTOR := preload("res://src/preview/land_drill_visual_actor.gd")
+const DIRECT_SHEET := preload("res://src/preview/land_drill_visual_sheet.gd")
 const DIRECT_CONTROLS := preload("res://src/preview/motion_lab_controls.gd")
-const NECK_CLOSURE := preload("res://src/preview/review_neck_closure.gd")
+const NECK_CLOSURE := preload("res://src/preview/land_drill_neck_closure.gd")
+const COCKPIT_SHEET_DISPLAY := preload("res://src/preview/land_drill_sheet_display.gd")
 const CACHED_HULL := preload("res://src/preview/land_drill_cached_hull.gd")
 const DELIVERY := preload("res://src/preview/land_drill_runtime_config.gd")
+const FIRST_PERSON_VIEW := preload("res://src/preview/land_drill_first_person_view.gd")
+var first_person_view := FIRST_PERSON_VIEW.new()
 var startup_ms := 0.0
 var startup_ready := false
 var startup_stages := {}
@@ -30,7 +33,7 @@ func _ready() -> void:
 	_create_stage()
 	startup_stages["stage_ms"]=(Time.get_ticks_usec()-started)/1000.0
 	var part_started := Time.get_ticks_usec()
-	actor=DIRECT_ACTOR.new()
+	actor=_new_actor()
 	actor.name="AuthoredSailor"
 	actor.extension_span=extension.tiller_extension_span()
 	add_child(actor)
@@ -44,7 +47,7 @@ func _ready() -> void:
 	session.setup(actor)
 	startup_stages["seat_ms"]=(Time.get_ticks_usec()-part_started)/1000.0
 	part_started=Time.get_ticks_usec()
-	complete_sheet=DIRECT_SHEET.new()
+	complete_sheet=_new_sheet()
 	complete_sheet.name="TrainingMainsheet"
 	add_child(complete_sheet)
 	if not complete_sheet.setup(self):
@@ -54,7 +57,7 @@ func _ready() -> void:
 	startup_stages["sheet_ms"]=(Time.get_ticks_usec()-part_started)/1000.0
 	part_started=Time.get_ticks_usec()
 	var old_cap: MeshInstance3D=actor.neck_cap
-	var cap := NECK_CLOSURE.new()
+	var cap := _new_neck_closure()
 	var body: MeshInstance3D=actor.skeleton.get_node("SuperHero_Male")
 	body.get_parent().add_child(cap)
 	if not cap.setup(body,actor.body_material.get_shader_parameter("head_bind_index"),actor.HEAD_MASK_THRESHOLD):
@@ -67,11 +70,8 @@ func _ready() -> void:
 	startup_stages["cap_ms"]=(Time.get_ticks_usec()-part_started)/1000.0
 	part_started=Time.get_ticks_usec()
 	# Same scene, one initial connection. No re-instantiation or compare mode.
-	review_options.active=true
-	review_options.held_only=true
-	review_options.tube=REVIEW_OPTIONS.VIEW.new()
-	review_options.tube.name="HeldSheet"
-	add_child(review_options.tube)
+	review_options=_new_sheet_display()
+	review_options.setup(self)
 	controls=DIRECT_CONTROLS.new()
 	if not embedded_controls:
 		_create_controls()
@@ -84,6 +84,36 @@ func _ready() -> void:
 	startup_stages["ui_ms"]=(Time.get_ticks_usec()-part_started)/1000.0
 	startup_ms=float(Time.get_ticks_usec()-started)/1000.0
 	startup_ready=true
+
+func _new_actor() -> Node3D: return DIRECT_ACTOR.new()
+
+func _new_sheet() -> Node3D: return DIRECT_SHEET.new()
+func _new_neck_closure() -> MeshInstance3D: return NECK_CLOSURE.new()
+func _new_sheet_display() -> RefCounted: return COCKPIT_SHEET_DISPLAY.new()
+
+func _update_first_person_camera() -> void:
+	first_person_view.update(self)
+
+func _set_view_base(index: int,reset_look: bool) -> void:
+	super._set_view_base(index,reset_look)
+	if index==3 and reset_look:
+		first_person_view.reset_follow(self)
+		_update_first_person_camera()
+
+func set_follow_work(value: bool) -> void:
+	follow_work_area=value
+	if value: first_person_view.reset_follow(self)
+	if selected_view==3: _update_first_person_camera()
+	if controls.lab!=null: controls.refresh()
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key: int=event.physical_keycode if event.physical_keycode!=0 else event.keycode
+		if key==KEY_F:
+			if selected_view!=3: set_view(3)
+			set_follow_work(not follow_work_area)
+			return
+	super._unhandled_key_input(event)
 
 func supports_rig_diagnostics() -> bool: return false
 

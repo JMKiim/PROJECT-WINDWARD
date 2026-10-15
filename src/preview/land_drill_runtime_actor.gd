@@ -35,7 +35,9 @@ func _ready() -> void:
 	sheet_study=LAND_SHEET.new()
 	add_child(sheet_study)
 	sheet_study.setup(self)
-	sheet_control=DIRECT_CONTROL.new()
+	sheet_control=_new_sheet_control()
 	add_child(sheet_control)
 	sheet_control.setup(self)
 	set_amount(0)
+
+func _new_sheet_control() -> Node: return DIRECT_CONTROL.new()
