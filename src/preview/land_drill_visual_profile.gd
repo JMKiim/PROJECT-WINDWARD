@@ -6,22 +6,23 @@ const HIGH := Vector3(-.14,.76,.50)
 const HELPER_START := Vector3(-.18,.94,.40)
 const HELPER_END := Vector3(-.10,.91,.54)
 const HELPER_LOGICAL_STROKE := .21354
+var presentation_gain := 1.0
 func valid() -> bool: return true
 func length_at(section: String,_steering: float,progress: float) -> float:
 	# Authored hand travel is the logical stroke calibration, not display arc.
 	if section=="work":
-		if progress<.5: return LOW.distance_to(READY)*smoothstep(0,.5,progress)
-		return LOW.distance_to(READY)+READY.distance_to(HIGH)*smoothstep(.5,1,progress)
+		if progress<.5: return presentation_gain*LOW.distance_to(READY)*smoothstep(0,.5,progress)
+		return presentation_gain*(LOW.distance_to(READY)+READY.distance_to(HIGH)*smoothstep(.5,1,progress))
 	# Animation-to-trim calibration is independent of the shortened visual
 	# grip travel; keeping the fingers smooth must not slow the trim system.
-	return (HELPER_LOGICAL_STROKE if section=="helper" else LOW.distance_to(HIGH))*smoothstep(0,1,progress)
+	return presentation_gain*(HELPER_LOGICAL_STROKE if section=="helper" else LOW.distance_to(HIGH))*smoothstep(0,1,progress)
 func advance_distance(section: String,steering: float,progress: float,distance: float) -> float:
 	var goal := clampf(length_at(section,steering,progress)+distance,0,length_at(section,steering,1))
 	if goal<=0: return 0
 	if goal>=length_at(section,steering,1): return 1
 	var low := 0.0
 	var high := 1.0
-	for step in 20:
+	for step in (22 if presentation_gain!=1 else 20):
 		var middle := (low+high)*.5
 		if length_at(section,steering,middle)<goal: low=middle
 		else: high=middle

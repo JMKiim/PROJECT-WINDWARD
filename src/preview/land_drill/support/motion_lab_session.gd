@@ -12,6 +12,8 @@ var mode := Mode.SHEET
 var reference_fixture := false
 var bilateral_sheet_enabled := false
 var hiking_sheet_enabled := false
+var visual_port_hiking_enabled := false
+var visual_starboard_hiking_enabled := false
 var requested_hike := 0.0
 var requested_side := -1
 var posture_pending := false
@@ -47,10 +49,14 @@ func sheet_pose_reason() -> String:
 	if reference_fixture: return "Authoring fixture: not the interactive scene."
 	if posture_pending: return "Finishing hand return before the requested posture. Trim is retained."
 	if (actor.seat_side != -1 and not bilateral_sheet_enabled) or (not _hiking_sheet_ready() and (actor.hike > 0.000001 or actor.hike_target > 0.000001 or actor.grip_phase != "HOLD")):
-		return "Sheet motion currently supports PORT / SEATED. Steering and view remain manual."
+		if visual_starboard_hiking_enabled: return "손 복귀 후 하이크 시트를 계속 조작할 수 있어요. 트림은 유지돼요."
+		if visual_port_hiking_enabled: return "시트는 양현 착석과 좌현 하이크를 지원해요. 우현 하이크는 아직 준비 중이에요."
+		return "시트 동작은 현재 양현 착석 자세를 지원해요. 조타와 시야는 계속 조작할 수 있어요." if bilateral_sheet_enabled else "Sheet motion currently supports PORT / SEATED. Steering and view remain manual."
 	return ""
 
 func _hiking_sheet_ready() -> bool:
+	if visual_port_hiking_enabled or visual_starboard_hiking_enabled:
+		return (visual_port_hiking_enabled if actor.seat_side==-1 else visual_starboard_hiking_enabled) and wheel_pull.motion!=null
 	return hiking_sheet_enabled and actor.hiking_sheet_grid!=null and wheel_pull.motion!=null and wheel_pull.motion.profile is HIKING_FEED
 
 func support_reason() -> String:
@@ -79,8 +85,18 @@ func request_side(value: int) -> void:
 	posture_pending = value != actor.seat_side
 	if posture_pending: wheel_pull.pause()
 	if posture_pending and actor.sheet_control.weight <= 0.0:
-		actor.set_side(value)
+		_apply_inspection_side(value)
 		posture_pending = false
+
+func _apply_inspection_side(value: int) -> void:
+	# This is a camera/seat inspection cut, not a tack. Changing the hand's
+	# push/pull convention must not reverse the actual rudder in the boat.
+	var factor := float(actor.seat_side)/float(value)
+	var physical_amount: float=actor.amount*factor
+	var physical_target: float=actor.steering_target*factor if actor.has_method("request_amount") else physical_amount
+	actor.set_side(value)
+	actor.set_amount(physical_amount)
+	if actor.has_method("request_amount"): actor.request_amount(physical_target)
 
 func advance(delta: float) -> void:
 	if not is_finite(delta) or delta <= 0.0 or reference_fixture: return
@@ -91,8 +107,11 @@ func advance(delta: float) -> void:
 	if actor.has_method("advance_steering"): actor.advance_steering(delta,false)
 	var live_hike := _hiking_sheet_ready()
 	if live_hike:
-		actor.advance_hike(delta)
-		wheel_pull.motion.profile.hike = actor.hike
+		if visual_port_hiking_enabled or visual_starboard_hiking_enabled: actor.advance_hike(delta,false)
+		else: actor.advance_hike(delta)
+		if wheel_pull.motion.profile is HIKING_FEED: wheel_pull.motion.profile.hike = actor.hike
+	if (visual_port_hiking_enabled or visual_starboard_hiking_enabled) and wheel_pull.motion!=null and wheel_pull.motion.has_method("set_posture"):
+		wheel_pull.motion.set_posture(actor.hike if _hiking_sheet_ready() else 0.0)
 	wheel_pull.advance(delta,actor.amount)
 	actor.sheet_control.work = wheel_pull.work
 	actor.sheet_control.slip = wheel_pull.slip
@@ -100,10 +119,12 @@ func advance(delta: float) -> void:
 	var target_weight := 1.0 if sheet_pose_reason().is_empty() else 0.0
 	actor.sheet_control.weight = move_toward(actor.sheet_control.weight, target_weight, delta * 3.0)
 	if posture_pending and actor.sheet_control.weight <= 0.0:
-		if requested_side != actor.seat_side: actor.set_side(requested_side)
+		if requested_side != actor.seat_side: _apply_inspection_side(requested_side)
 		actor.request_hike(requested_hike)
 		posture_pending = false
-	if not live_hike: actor.advance_hike(delta)
+	if not live_hike:
+		if visual_port_hiking_enabled or visual_starboard_hiking_enabled: actor.advance_hike(delta,false)
+		else: actor.advance_hike(delta)
 	actor.set_amount(actor.amount)
 
 func reset_action() -> void:
@@ -151,6 +172,9 @@ func snapshot() -> Dictionary:
 		"supported":support_reason().is_empty(), "reason":support_reason(), "notice":notice,
 		"side":actor.seat_side, "hike":actor.hike, "hike_target":actor.hike_target,
 		"hiking_sheet_supported":_hiking_sheet_ready(), "extension_span_metres":actor.extension_span,
+		"bilateral_sheet_supported":bilateral_sheet_enabled,
+		"port_hiking_sheet_supported":visual_port_hiking_enabled,
+		"starboard_hiking_sheet_supported":visual_starboard_hiking_enabled,
 		"requested_side":requested_side, "requested_hike":requested_hike, "posture_pending":posture_pending,
 		"grip_phase":actor.grip_phase, "rudder":actor.amount,
 		"sheet_enabled":actor.sheet_study.enabled, "sheet_time":actor.sheet_study.time,

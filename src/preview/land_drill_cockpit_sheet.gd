@@ -16,6 +16,7 @@ var last_signature := []
 var geometry_signature := []
 var routed_prefix := PackedVector3Array()
 var fall_profile := PackedVector3Array()
+var grasp_knots := PackedInt32Array()
 func _caps(specs: Array) -> Array:
 	var result := []
 	for cap in specs:
@@ -54,7 +55,7 @@ func _surface_distance(a: Vector3,b: Vector3) -> float:
 func _prefix() -> PackedVector3Array:
 	var player: Node=actor.sheet_control.regrip
 	var sheet: PackedVector3Array=actor.sheet_channel_boat().slice(1,4)
-	var helper: PackedVector3Array=CONTACT.helper_channel(actor.bone_pose_boat(actor.tiller_hand()+"Hand"))
+	var helper: PackedVector3Array=CONTACT.helper_channel(actor.bone_pose_boat(actor.tiller_hand()+"Hand"),actor.tiller_hand())
 	var sheet_weight := 1.0
 	var helper_weight := 0.0
 	if player.active_weight>0:
@@ -68,6 +69,9 @@ func _prefix() -> PackedVector3Array:
 	var active := smoothstep(0,1,player.active_weight)
 	helper_weight*=active
 	sheet_weight=lerpf(1,sheet_weight,active)
+	grasp_knots=PackedInt32Array([0])
+	if sheet_weight>=.999999: grasp_knots.append_array(PackedInt32Array([1,2,3]))
+	if helper_weight>=.999999: grasp_knots.append_array(PackedInt32Array([4,5,6]))
 	var path := PackedVector3Array([actor.sheet_study.block_anchor])
 	for point in sheet:
 		var settled := Geometry3D.get_closest_point_to_segment(point,path[0],helper[0])
@@ -76,8 +80,63 @@ func _prefix() -> PackedVector3Array:
 	return path
 func _route_prefix(path: PackedVector3Array,caps: Array) -> PackedVector3Array:
 	var points := PackedVector3Array([path[0]])
+	var hiking: bool=actor.hike>0
+	var approach := PackedFloat32Array([.25,.50,.75,.90,.97,1])
+	var divisions := approach.size() if hiking else 16
 	for segment in path.size()-1:
-		for sample in range(1,17): points.append(path[segment].lerp(path[segment+1],sample/16.0))
+		for sample in range(1,divisions+1):
+			var fraction: float=approach[sample-1] if hiking else sample/float(divisions)
+			points.append(path[segment].lerp(path[segment+1],fraction))
+	if actor.hike>0:
+		var bounds := []
+		for cap in caps:
+			var padding := Vector3.ONE*(float(cap[2])+.006001)
+			bounds.append([cap[0].min(cap[1])-padding,cap[0].max(cap[1])+padding])
+		# Approach the legs from their forward side, as the gravity strand
+		# does. A radial seed can choose an upward detour around a knee.
+		for index in range(1,points.size()):
+			if index%divisions==0 and grasp_knots.has(index/divisions): continue
+			for cap_index in range(1,caps.size()):
+				var cap: Array=caps[cap_index]
+				var nearest := Geometry3D.get_closest_point_to_segment(points[index],cap[0],cap[1])
+				var radius: float=float(cap[2])+.012
+				var influence := 1-smoothstep(radius+.015,radius+.065,points[index].distance_to(nearest))
+				var front: float=minf(cap[0].z,cap[1].z)-radius-.006
+				points[index].z-=maxf(0,points[index].z-front)*influence
+		# Only actual grasp knots are fixed. Blended appearance guides are
+		# free, not phantom fingers pinning the strand inside a moving thigh.
+		for iteration in 12:
+			var changed := false
+			for segment in points.size()-1:
+				var free_a := segment%divisions!=0 or not grasp_knots.has(segment/divisions)
+				var free_b := (segment+1)%divisions!=0 or not grasp_knots.has((segment+1)/divisions)
+				if not free_a and not free_b: continue
+				for cap_index in caps.size():
+					var cap: Array=caps[cap_index]
+					var segment_low := points[segment].min(points[segment+1])
+					var segment_high := points[segment].max(points[segment+1])
+					var cap_low: Vector3=bounds[cap_index][0]
+					var cap_high: Vector3=bounds[cap_index][1]
+					if segment_low.x>cap_high.x or segment_high.x<cap_low.x or segment_low.y>cap_high.y or segment_high.y<cap_low.y or segment_low.z>cap_high.z or segment_high.z<cap_low.z: continue
+					var pair := Geometry3D.get_closest_points_between_segments(points[segment],points[segment+1],cap[0],cap[1])
+					var delta := pair[0]-pair[1]
+					var edge := points[segment+1]-points[segment]
+					var fraction := clampf((pair[0]-points[segment]).dot(edge)/maxf(.0000000001,edge.length_squared()),0,1)
+					var depth: float=float(cap[2])+.006*4*fraction*(1-fraction)-delta.length()
+					# Stop inside the routing reserve, not at a relaxed physical
+					# contact threshold. Avoid12 passes chasing float dust.
+					if depth<=.00001: continue
+					var a := 1-fraction if free_a else 0.0
+					var b := fraction if free_b else 0.0
+					var denominator := a*a+b*b
+					if denominator<.0000001: continue
+					var shift: Vector3=(delta.normalized() if delta.length()>.000001 else Vector3.FORWARD)*depth/denominator
+					if shift.length()>.04: shift=shift.normalized()*.04
+					points[segment]+=shift*a
+					points[segment+1]+=shift*b
+					changed=true
+			if not changed: break
+		return points
 	var away: Vector3=actor.from_port(Vector3.RIGHT)
 	for iteration in 4:
 		for index in range(1,points.size()-1):
@@ -101,14 +160,17 @@ func build(cockpit_metres: float) -> Dictionary:
 	var touch := Vector3(x,hull.cockpit_floor_y_at(x,z)+RADIUS+.002,z)
 	var contact_caps := _caps([["Hips","UpperChest",.164],["LeftUpperLeg","LeftLowerLeg",.104],["RightUpperLeg","RightLowerLeg",.104],["LeftLowerLeg","LeftFoot",.080],["RightLowerLeg","RightFoot",.080],["LeftFoot","LeftToes",.066],["RightFoot","RightToes",.066]])
 	var route_caps := _caps([["Hips","UpperChest",.1569],["LeftUpperLeg","LeftLowerLeg",.0969],["RightUpperLeg","RightLowerLeg",.0969],["LeftLowerLeg","LeftFoot",.078],["RightLowerLeg","RightFoot",.078],["LeftFoot","LeftToes",.065],["RightFoot","RightToes",.065]])
-	var signature := [prefix,cockpit_metres,actor.seat_side,contact_caps]
+	var signature := [prefix,cockpit_metres,actor.seat_side,contact_caps,grasp_knots]
 	if signature==last_signature and not last_result.is_empty(): return last_result
-	var geometry := [prefix,actor.seat_side,contact_caps]
+	var geometry := [prefix,actor.seat_side,contact_caps,grasp_knots]
 	if geometry!=geometry_signature:
 		routed_prefix=_route_prefix(prefix,route_caps)
+		outlet=routed_prefix[-1]
+		touch=Vector3(clampf(outlet.x,-.55,.55),hull.cockpit_floor_y_at(clampf(outlet.x,-.55,.55),z)+RADIUS+.002,z)
 		fall_profile=GRAVITY_PATH.fall(outlet,touch,contact_caps,hull,actor.from_port(Vector3.RIGHT))
 		geometry_signature=geometry.duplicate(true)
 	prefix=routed_prefix
+	outlet=prefix[-1]
 	var fall := fall_profile
 	var routing := []
 	touch=fall[-1]
@@ -129,15 +191,7 @@ func build(cockpit_metres: float) -> Dictionary:
 		last_signature=signature.duplicate(true)
 		return last_result
 	var available := maxf(0,cockpit_metres-held_length-suspended)
-	var low := 0.0
-	var high: float=minf(arc[-1],available)
-	for iteration in 20:
-		var middle := (low+high)*.5
-		var sample := _at(middle)
-		var needed: float=middle+_surface_distance(touch,sample.point)
-		if needed<available: low=middle
-		else: high=middle
-	var sample := _at((low+high)*.5)
+	var sample := _floor_parameter(touch,available)
 	var floor_path := _surface_line(touch,sample.point)
 	var dynamic := prefix.duplicate()
 	dynamic.append_array(fall.slice(1))
@@ -152,3 +206,48 @@ func build(cockpit_metres: float) -> Dictionary:
 	last_result.pile_points=sample.index+1
 	last_signature=signature.duplicate(true)
 	return last_result
+
+func _floor_parameter_binary(touch: Vector3,available: float) -> Dictionary:
+	var low := 0.0
+	var high: float=minf(arc[-1],available)
+	for iteration in 20:
+		var middle := (low+high)*.5
+		var sample := _at(middle)
+		var needed: float=middle+_surface_distance(touch,sample.point)
+		if needed<available: low=middle
+		else: high=middle
+	return _at((low+high)*.5)
+func _floor_parameter(touch: Vector3,available: float) -> Dictionary:
+	if actor.hike<=0: return _floor_parameter_binary(touch,available)
+	var low := 0.0
+	var high: float=minf(arc[-1],available)
+	var below := _surface_distance(touch,ground[0])-available
+	var above: float=high+_surface_distance(touch,_at(high).point)-available
+	if below>0 or above<0: return _floor_parameter_binary(touch,available)
+	var previous_side := 0
+	# Bracketed Illinois interpolation,2um residual (the original20-step
+	# binary bracket spans up to9um here). Fall back to the original solve
+	# if its bracket cannot converge. This never feeds input or the ledger.
+	for iteration in 24:
+		if above-below<=.0000000001: break
+		var middle := clampf((low*above-high*below)/(above-below),low,high)
+		var sample := _at(middle)
+		var value: float=middle+_surface_distance(touch,sample.point)-available
+		if absf(value)<=.000002:
+			# The moulded floor can lift an interpolated pile point. That
+			# non-smooth join is outside the smooth root's model; retain
+			# the established binary geometry there instead of changing it.
+			if sample.point.y<hull.cockpit_floor_y_at(sample.point.x,sample.point.z)+RADIUS+.002-.000002:
+				return _floor_parameter_binary(touch,available)
+			return sample
+		if value<0:
+			low=middle
+			below=value
+			if previous_side==-1: above*=.5
+			previous_side=-1
+		else:
+			high=middle
+			above=value
+			if previous_side==1: below*=.5
+			previous_side=1
+	return _floor_parameter_binary(touch,available)

@@ -7,7 +7,9 @@ const COCKPIT_SHEET_DISPLAY := preload("res://src/preview/land_drill_sheet_displ
 const CACHED_HULL := preload("res://src/preview/land_drill_cached_hull.gd")
 const DELIVERY := preload("res://src/preview/land_drill_runtime_config.gd")
 const FIRST_PERSON_VIEW := preload("res://src/preview/land_drill_first_person_view.gd")
+const RIG_DISPLAY := preload("res://src/preview/land_drill_rig_display.gd")
 var first_person_view := FIRST_PERSON_VIEW.new()
+var rig_display: RefCounted
 var startup_ms := 0.0
 var startup_ready := false
 var startup_stages := {}
@@ -72,6 +74,19 @@ func _ready() -> void:
 	# Same scene, one initial connection. No re-instantiation or compare mode.
 	review_options=_new_sheet_display()
 	review_options.setup(self)
+	# Build the same visible rig once, without a second scene or load button.
+	review_options.show_held(self)
+	rig_display=RIG_DISPLAY.new()
+	if not rig_display.setup(self):
+		push_error("Training rig display could not be fitted")
+		set_process(false)
+		return
+	session.bilateral_sheet_enabled=true
+	session.visual_port_hiking_enabled=true
+	session.visual_starboard_hiking_enabled=true
+	_prepare_hiking_input()
+	startup_stages["rig_ms"]=(Time.get_ticks_usec()-part_started)/1000.0
+	part_started=Time.get_ticks_usec()
 	controls=DIRECT_CONTROLS.new()
 	if not embedded_controls:
 		_create_controls()
@@ -87,6 +102,35 @@ func _ready() -> void:
 
 func _new_actor() -> Node3D: return DIRECT_ACTOR.new()
 
+func _prepare_hiking_input() -> void:
+	# Lab-only actions: the same physical X/Z bindings can be exercised
+	# through the engine input path without polling the desktop keyboard.
+	for binding in [[&"land_hike_out",KEY_X],[&"land_hike_in",KEY_Z]]:
+		var action: StringName=binding[0]
+		if InputMap.has_action(action): continue
+		InputMap.add_action(action)
+		var event := InputEventKey.new()
+		event.physical_keycode=binding[1]
+		InputMap.action_add_event(action,event)
+
+func _process(delta: float) -> void:
+	if actor==null: return
+	var previous_side: int=actor.seat_side
+	var follow_hand: bool=camera!=null and (selected_view==4 or selected_view==5)
+	var previous_hand: Vector3=actor.palm_boat(actor.sheet_hand() if selected_view==4 else actor.tiller_hand()) if follow_hand else Vector3.ZERO
+	var previous_hike: float=actor.hike
+	super._process(delta)
+	# The seat selector is an explicit inspection cut, not a maneuver.
+	# Reframe only that cut; ordinary steering preserves the user's orbit.
+	if actor.seat_side!=previous_side and selected_view!=3 and camera!=null:
+		set_view(selected_view)
+	elif follow_hand and maxf(previous_hike,float(actor.hike))>0:
+		# Translate the inspector's entire frame with the selected hiking
+		# hand, retaining the user's zoom, orbit and pan offsets.
+		var shift: Vector3=actor.palm_boat(actor.sheet_hand() if selected_view==4 else actor.tiller_hand())-previous_hand
+		camera.position+=shift
+		inspection_target+=shift
+
 func _new_sheet() -> Node3D: return DIRECT_SHEET.new()
 func _new_neck_closure() -> MeshInstance3D: return NECK_CLOSURE.new()
 func _new_sheet_display() -> RefCounted: return COCKPIT_SHEET_DISPLAY.new()
@@ -96,6 +140,16 @@ func _update_first_person_camera() -> void:
 
 func _set_view_base(index: int,reset_look: bool) -> void:
 	super._set_view_base(index,reset_look)
+	if (index==4 or index==5) and actor.hike>0:
+		# Hiking hands are forward of the torso. Enter the close view from
+		# the bow side, not through the forearm; retain ordinary orbit/pan.
+		var palm: Vector3=actor.palm_boat(actor.sheet_hand() if index==4 else actor.tiller_hand())
+		var blend := smoothstep(0,.125,float(actor.hike))
+		camera.position=palm+actor.from_port(Vector3(.32,.18,lerpf(.22,-.36,blend)))
+		camera.look_at(to_global(palm),global_basis*Vector3.UP)
+	if index==7 and rig_display!=null:
+		camera.position=actor.from_port(Vector3(8,5,-6))
+		camera.look_at(to_global(_view_target(index)),global_basis*Vector3.UP)
 	if index==3 and reset_look:
 		first_person_view.reset_follow(self)
 		_update_first_person_camera()
@@ -116,6 +170,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	super._unhandled_key_input(event)
 
 func supports_rig_diagnostics() -> bool: return false
+func supports_rig_display() -> bool: return true
+
+func _refresh_preview() -> void:
+	super._refresh_preview()
+	if rig_display!=null and not rig_display.samples.is_empty():
+		if not rig_display.update():
+			session.notice="리그 표시 연결을 확인해 주세요."
+
+func _view_target(index: int) -> Vector3:
+	if index==7 and rig_display!=null: return Vector3(0,3,0)
+	if index==8 and rig_display!=null and rig_display.rig!=null:
+		return to_local((rig_display.rig.pin_lower.global_position+rig_display.rig.pin_upper.global_position)*.5)
+	return super._view_target(index)
 
 func _create_deck() -> void:
 	var hull := CACHED_HULL.new()

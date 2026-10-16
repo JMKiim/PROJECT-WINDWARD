@@ -24,12 +24,18 @@ static func sheet_channel(prefix: String="Left") -> PackedVector3Array:
 		for i in result.size(): result[i].x=-result[i].x
 	return result
 
-static func helper_channel(hand: Transform3D) -> PackedVector3Array:
+static func assist_local(prefix: String="Right") -> Vector3:
+	# Actual hand rest-space mapping is reflection of local X only. Keep
+	# thumb inlet/outlet identity when the anatomical helper hand changes.
+	return ASSIST_LOCAL if prefix=="Right" else ASSIST_LOCAL*Vector3(-1,1,1)
+
+static func helper_channel(hand: Transform3D,prefix: String="Right") -> PackedVector3Array:
 	# Inlet/outlet identity belongs to the authored thumb, not world height.
 	# Flipping at tangent.y == 0 teleports each endpoint by 12 mm and breaks
 	# both steering interpolation and the sheet hand's low regrasp path.
 	# Positive local direction follows the incoming block-to-thumb strand.
 	# The opposite direction doubled the short channel back over that strand.
-	var tangent := (hand.basis*CONTACT_AXIS).normalized()
-	var center := hand*ASSIST_LOCAL
+	var local_axis := CONTACT_AXIS if prefix=="Right" else CONTACT_AXIS*Vector3(-1,1,1)
+	var tangent := (hand.basis*local_axis).normalized()
+	var center := hand*assist_local(prefix)
 	return PackedVector3Array([center-tangent*PIN_HALF_LENGTH,center,center+tangent*PIN_HALF_LENGTH])

@@ -1,6 +1,7 @@
 extends RefCounted
 const CONTACT := preload("res://src/preview/land_drill/support/land_drill_grip_profile.gd")
 const LIMB := preload("res://src/boat/sailor_leg_pose.gd")
+const HIKING_GRIP := preload("res://src/preview/land_drill_hiking_grip.gd")
 static func _same_signature(a: Array,b: Array) -> bool:
 	if a.size()!=b.size(): return false
 	for index in a.size():
@@ -8,7 +9,7 @@ static func _same_signature(a: Array,b: Array) -> bool:
 			if not (a[index] as Transform3D).is_equal_approx(b[index]): return false
 		elif a[index]!=b[index]: return false
 	return true
-static func _shared_plan(actor: Node3D,side: String,guide: Vector3,held: Transform3D,s: Vector3,e: Vector3,w: Vector3) -> Dictionary:
+static func _shared_plan(actor: Node3D,side: String,guide: Vector3,held: Transform3D,s: Vector3,e: Vector3,w: Vector3,working_hike := false) -> Dictionary:
 	var joint: Vector3=actor.joint_boat()
 	var axis := (guide-joint).normalized()
 	var scale := held.basis.get_scale()
@@ -36,6 +37,8 @@ static func _shared_plan(actor: Node3D,side: String,guide: Vector3,held: Transfo
 	var shift := joint-offset-b*fore-s
 	var half := shift.dot(axis)
 	var discriminant := half*half-shift.length_squared()+s.distance_squared_to(e)
+	if working_hike:
+		return HIKING_GRIP.plan(actor,s,e,w,joint,axis,frame,scale,offset,fore,half,discriminant)
 	if discriminant<0: return {"valid":false,"reason":"grip quadratic"}
 	var selected := INF
 	var selected_elbow := Vector3.ZERO

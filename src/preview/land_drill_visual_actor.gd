@@ -30,11 +30,12 @@ func _sample_final_pose(value: float) -> void:
 	if seat_contact!=null:
 		look_pose.shoulder_follow_weight=0
 		seat_contact.apply()
-	if sheet_control!=null and sheet_control.weight>0 and seat_side==-1 and hike<.16:
+	if sheet_control!=null and sheet_control.weight>0:
 		var chest: int=skeleton.find_bone("UpperChest")
 		var transform: Transform3D=skeleton.get_bone_global_pose(chest)
 		var to_boat: Basis=global_basis.inverse()*skeleton.global_basis
-		var turn := deg_to_rad(30)*lerpf(1,-1,smoothstep(0,1,amount))
+		var turn := -seat_side*deg_to_rad(30)*lerpf(1,-1,smoothstep(0,1,amount))
+		turn*=1-smoothstep(0,.5,hike)
 		transform.basis=to_boat.inverse()*Basis(Vector3.UP,turn)*to_boat*transform.basis
 		skeleton.set_bone_global_pose(chest,transform)
 		skeleton.force_update_bone_child_transform(chest)
@@ -70,7 +71,7 @@ func set_amount(value: float) -> void:
 	if not wide_bank_ready or pose_defaults.is_empty():
 		_sample_final_pose(value)
 		return
-	if sheet_control==null or sheet_control.weight<=0 or sheet_control.weight>=1 or hike>=.16 or seat_side!=-1:
+	if sheet_control==null or sheet_control.weight<=0 or sheet_control.weight>=1:
 		_sample_final_pose(value)
 		if sheet_control!=null and sheet_control.weight<=0: transition_witness=TILLER_CONTACT.settle(self)
 		_release_tiller()

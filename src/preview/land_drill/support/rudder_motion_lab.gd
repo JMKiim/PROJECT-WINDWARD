@@ -112,7 +112,11 @@ func _process(delta: float) -> void:
 	var sheet_input := Input.get_axis("sheet_in", "sheet_out")
 	if not is_zero_approx(sheet_input):
 		session.input_sheet_wheel(-sheet_input * 30.0 * delta)
-	var hike_input := float(Input.is_physical_key_pressed(KEY_X)) - float(Input.is_physical_key_pressed(KEY_Z))
+	var hike_input := 0.0
+	if InputMap.has_action("land_hike_out") and InputMap.has_action("land_hike_in"):
+		hike_input=Input.get_axis("land_hike_in","land_hike_out")
+	else:
+		hike_input=float(Input.is_physical_key_pressed(KEY_X))-float(Input.is_physical_key_pressed(KEY_Z))
 	if not is_zero_approx(hike_input):
 		session.request_hike(session.requested_hike + hike_input * delta * 0.5)
 	# The distance profile must see this frame's steering, not the previous

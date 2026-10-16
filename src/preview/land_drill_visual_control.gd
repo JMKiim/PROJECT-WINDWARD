@@ -18,6 +18,7 @@ func setup(value: Node3D) -> void:
 	regrip.setup(actor)
 func _new_player() -> Node: return PLAYER.new()
 func sample() -> void:
+	regrip.select_reference(actor.seat_side)
 	_update_easing_feedback()
 	set_display_weight(weight)
 	if weight<=0: return

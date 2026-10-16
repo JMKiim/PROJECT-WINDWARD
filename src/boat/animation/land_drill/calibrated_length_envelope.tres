@@ -1,0 +1,16 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://src/boat/animation/training_sheet_envelope.gd" id="1_bounds"]
+
+[resource]
+script = ExtResource("1_bounds")
+minimum_rig_metres = 4.204
+minimum_cockpit_metres = 1.1226807293947787
+maximum_held_metres = 1.0226807293947786
+fixed_end_metres = 0.23125006799818948
+free_end_metres = 0.2641051553655416
+metadata/calibration_model = "Straight mast, fitted boom webbing and clew eye; seated port trim envelope"
+metadata/calibration_closed_pitch_radians = -0.123029653014116
+metadata/calibration_maximum_closed_rig_metres = 4.20379398070509
+metadata/calibration_reference_leech_metres = 5.51204314827919
+metadata/calibration_source_envelope_sha256 = "9d3a7329e05d0b53bf3a05f2660de5600fea7ca07585eaf7ce4fb5c2a7a97693"

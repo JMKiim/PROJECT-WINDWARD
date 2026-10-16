@@ -2,6 +2,7 @@ extends "res://src/preview/land_drill/support/held_sheet_display.gd"
 const FLOOR_VIEW := preload("res://src/boat/rope_view.gd")
 const END_VIEW := preload("res://src/boat/rope_tube_view.gd")
 const FLOOR := preload("res://src/preview/land_drill_cockpit_sheet.gd")
+const JOIN := preload("res://src/boat/mainsheet_deck_join.gd")
 var end_tube: Node3D
 var pile: Node3D
 var model := FLOOR.new()
@@ -29,7 +30,10 @@ func show_held(lab: Node3D) -> void:
 	lab.sheet.hide()
 	var result := model.build(lab.complete_sheet.ledger.cockpit_metres)
 	if not result.valid: return
-	tube.show_path(result.dynamic_path)
+	var visible_path: PackedVector3Array=result.dynamic_path
+	if lab.get("rig_display")!=null and lab.rig_display.valid:
+		visible_path=JOIN.remote(visible_path,lab.to_local(lab.ratchet.rope_anchor_global()))
+	tube.show_path(visible_path)
 	pile.segments.multimesh.visible_instance_count=maxi(0,result.pile_points-1)
 	pile.joints.multimesh.visible_instance_count=result.pile_points
 	end_tube.show_path(result.end_path)

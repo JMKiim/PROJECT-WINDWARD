@@ -46,7 +46,8 @@ func build(value: Node3D) -> void:
 	if lab.has_method("supports_rig_diagnostics") and not lab.supports_rig_diagnostics():
 		inspect_button.disabled=true
 		inspect_button.tooltip_text="전체 자유 줄의 접촉 검증 후 다시 연결할 진단이에요."
-		for index in range(7,10): view_select.set_item_disabled(index,true)
+		if not lab.has_method("supports_rig_display") or not lab.supports_rig_display():
+			for index in range(7,10): view_select.set_item_disabled(index,true)
 	manual_button=_button("수동 조작",func(): lab.rig_inspection.clear_load(),row)
 	cancel_button=_button("취소",func(): lab.rig_inspection.cancel_request(),row)
 	manual_button.hide()
@@ -55,7 +56,7 @@ func build(value: Node3D) -> void:
 	inspection_status.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	inspection_status.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
 	inspection_status.mouse_filter=Control.MOUSE_FILTER_PASS
-	input_hint=_label("A/D 조타 · Space 중립 · W/S 또는 휠↓/↑ 시트 · C 1인칭 · F 손 쪽 보기 · 클릭 후 시선 / Esc 커서 · Z/X 하이크",stack)
+	input_hint=_label("A/D 조타 · Space 중립 · W/S 또는 휠↓/↑ 시트 · 8 검수 좌우 · C 1인칭 · F 손 쪽 보기 · 클릭 후 시선 / Esc 커서 · Z/X 하이크",stack)
 	input_hint.mouse_filter=Control.MOUSE_FILTER_IGNORE
 	input_hint.add_theme_font_size_override("font_size",15)
 	drawer=PanelContainer.new()
@@ -86,7 +87,7 @@ func build(value: Node3D) -> void:
 	row=_row(advanced_column)
 	_label("하이크 Z/X",row)
 	lab.hike_slider=_slider(0,1,.01,lab._request_hike,row)
-	_button("좌우 [8]",func(): lab.set_side(-lab.actor.seat_side),row)
+	_button("검수 좌우 [8]",func(): lab.set_side(-lab.actor.seat_side),row)
 	follow_button=CheckButton.new()
 	follow_button.text="1인칭에서 손 쪽 보기 [F]"
 	follow_button.focus_mode=Control.FOCUS_NONE
@@ -102,8 +103,11 @@ func build(value: Node3D) -> void:
 	lab.sheet_status=_label("",advanced_column)
 	var range_hint := "조타 ±24° · 1,250mm 익스텐션\n검증된 동작 범위이며 실물 최대각은 아니에요." if lab.wide_steering_enabled else "조타 ±12°는 현 저작 범위이며 실물 최대각이 아니에요."
 	if lab.has_method("supports_rig_diagnostics") and not lab.supports_rig_diagnostics():
-		range_hint+="\n콕핏 여유 줄은 표현 근사예요.\n붐/트래블러 전체 리그는 아직 미연결이에요."
-	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\nCtrl+휠 확대 · 우드래그 회전 · 휠버튼 드래그 이동\n좌우 변경은 태킹이 아니라 자세 검수예요.\n시트는 현재 좌현·앉은 자세를 지원해요.\n"+range_hint,advanced_column)
+		range_hint+="\n줄·붐·세일은 기하 기반 표현 근사예요.\n바람/장력의 동역학은 아직 미연결이에요." if lab.has_method("supports_rig_display") and lab.supports_rig_display() else "\n콕핏 여유 줄은 표현 근사예요.\n붐/트래블러 전체 리그는 아직 미연결이에요."
+	var seat_hint := "시트는 현재 양현·앉은 자세를 지원해요.\n" if lab.session.bilateral_sheet_enabled else "시트는 현재 좌현·앉은 자세를 지원해요.\n"
+	if lab.session.visual_port_hiking_enabled: seat_hint="시트는 양현 착석·좌현 하이크를 지원해요.\nX 하이크 증가 · Z 복귀 (우현 하이크는 준비 중)\n"
+	if lab.session.visual_starboard_hiking_enabled: seat_hint="시트는 양현 착석·하이크를 지원해요.\nX 하이크 증가 · Z 복귀 · 8 좌우 검수 위치 전환\n"
+	lab.mode_hint=_label("번호: 줄 선택 · Shift+휠: 큰 폭 조절\nCtrl+휠 확대 · 우드래그 회전 · 휠버튼 드래그 이동\n좌우 변경은 태킹이 아니라 자세 검수예요.\n"+seat_hint+range_hint,advanced_column)
 	for label in [support,lab.status,lab.sheet_status,lab.mode_hint]: label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	drawer.hide()
 	lab.get_viewport().size_changed.connect(_resize)
@@ -157,7 +161,7 @@ func refresh() -> void:
 	if not session.notice.is_empty(): support.text+="\n"+session.notice
 	var input=session.wheel_pull
 	var state := "대기" if input.state=="REST" else ("풀기" if "EASE" in input.state else "손 동작")
-	summary.text="조타 %+.0f° · %s · 회수 %.2f m" % [rad_to_deg(lab.actor.rudder_angle()),state,input.metres]
+	summary.text="%s · 조타 %+.0f° · %s · 회수 %.2f m" % ["좌현" if lab.actor.seat_side==-1 else "우현",rad_to_deg(lab.actor.rudder_angle()),state,input.metres]
 	if absf(lab.actor.amount)>=.999: summary.text+=" · 저작 범위 끝"
 	if not reason.is_empty(): summary.text="선택 동작 미지원 · 상세 확인"
 	lab.sheet_status.text="트림 %.3f / 목표 %.3f m\n범위 %.3f~%.3f m · %s" % [input.metres,input.target_metres,input.minimum_metres,input.maximum_metres,input.state]

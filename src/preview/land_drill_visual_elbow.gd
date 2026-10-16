@@ -1,6 +1,6 @@
 extends RefCounted
 ## Closed-form elbow-circle support planes, not a sampled pose search.
-static func guide(s: Vector3,w: Vector3,a: float,b: float,pole: Vector3,normal: Vector3,support: float) -> Dictionary:
+static func guide(s: Vector3,w: Vector3,a: float,b: float,pole: Vector3,normal: Vector3,support: float,planes: Array=[]) -> Dictionary:
 	var distance := s.distance_to(w)
 	if distance>=a+b or distance<=absf(a-b): return {"valid":false,"reason":"reach"}
 	if w.dot(normal)<support: return {"valid":false,"reason":"wrist inside torso support plane"}
@@ -13,6 +13,8 @@ static func guide(s: Vector3,w: Vector3,a: float,b: float,pole: Vector3,normal: 
 	if u.is_zero_approx(): return {"valid":false,"reason":"elbow guide singular"}
 	var v := axis.cross(u)
 	var rows := [{"a":-radius*u.dot(normal),"b":-radius*v.dot(normal),"bound":centre.dot(normal)-support},{"a":radius*u.y,"b":radius*v.y,"bound":s.y-.085-centre.y}]
+	for plane in planes:
+		rows.append({"a":radius*u.dot(plane.normal),"b":radius*v.dot(plane.normal),"bound":plane.maximum-centre.dot(plane.normal)})
 	var cuts := [0.0,TAU]
 	for row in rows:
 		var magnitude: float=sqrt(row.a*row.a+row.b*row.b)

@@ -183,7 +183,7 @@ func request_hike(value: float) -> void:
 		grip_phase = "LOOSEN"
 
 
-func advance_hike(delta: float) -> void:
+func advance_hike(delta: float,resample := true) -> void:
 	if not is_finite(delta) or delta <= 0.0 or grip_phase == "HOLD":
 		return
 	var remaining := delta
@@ -214,7 +214,7 @@ func advance_hike(delta: float) -> void:
 			if step >= duration:
 				grip_loosen = 0.0
 				grip_phase = "HOLD"
-	set_amount(amount)
+	if resample: set_amount(amount)
 
 
 func set_side(value: int) -> void:

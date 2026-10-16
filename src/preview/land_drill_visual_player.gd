@@ -4,6 +4,8 @@ const LIMB := preload("res://src/boat/sailor_leg_pose.gd")
 const PROFILE := preload("res://src/preview/land_drill_visual_profile.gd")
 const CONTACT := preload("res://src/preview/land_drill/support/land_drill_grip_profile.gd")
 const ELBOW := preload("res://src/preview/land_drill_visual_elbow.gd")
+const TILLER_PLAN := preload("res://src/preview/land_drill_tiller_contact.gd")
+const HIKING_PROFILE := preload("res://src/preview/land_drill_hiking_profile.gd")
 var actor: Node3D
 var time := -1.0
 var clip_section := "entry"
@@ -12,15 +14,49 @@ var wrap_direction := {}
 var wrap_sweep := {}
 var contact_angles := {}
 var reference_frames := {}
+var seated_references := {}
 var reach_errors := {}
 var joint_witness := {}
 var pose_points := {}
 var profile := PROFILE.new()
 var ease_relaxation := 0.0
 var active_weight := 1.0
+var hiking_profile: RefCounted=HIKING_PROFILE.new()
+func working_goal(point: Vector3) -> Vector3:
+	# The seated guides must travel with the unchanged hiking body. This
+	# authors the working space; the finite grip is still solved on the shaft.
+	if actor.hike>0:
+		point+=Vector3(-.60,-.20,0)*actor.hike
+	return actor.from_port(point)
+func tiller_goal(point: Vector3) -> Vector3:
+	var seated: Vector3=actor.from_port(point)
+	if actor.hike<=0: return seated
+	if hiking_profile!=null:
+		var start: Vector3=profile.palm_at("helper","right",actor.amount,0)
+		var delta: Vector3=profile.palm_at("helper","right",actor.amount,1)-start
+		var progress := clampf((point-start).dot(delta)/delta.length_squared(),0,1)
+		return actor.from_port(hiking_profile.tiller_at(actor.amount,actor.hike,progress))
+	var joint: Vector3=actor.joint_boat()
+	var axis: Vector3=actor.from_port(actor.rest_guide.sample(actor.amount,actor.hike))
+	var offset: Vector3=point-profile.palm_at("helper","right",actor.amount,0)
+	var goal: Vector3=joint+axis*actor.palm_boat().distance_to(joint)+actor.from_port(Vector3(-offset.x,offset.y*.3,offset.z*.3))
+	return seated.lerp(goal,smoothstep(0,.5,actor.hike))
 func setup(value: Node3D) -> void:
 	actor=value
-	for side in ["Left","Right"]: reference_frames[side]=actor.bone_pose_boat(side+"Hand").basis.orthonormalized()
+	# Each role reads its own authored seat, rather than reusing a sheet
+	# hand's port orientation as the starboard tiller grip. Sample once only.
+	var original_side: int=actor.seat_side
+	for seat: int in [-1,1]:
+		actor.seat_side=seat
+		actor._sample_steering_pose()
+		var frames := {}
+		for hand in ["Left","Right"]: frames[hand]=actor.bone_pose_boat(hand+"Hand").basis.orthonormalized()
+		seated_references[seat]=frames
+	actor.seat_side=original_side
+	actor._sample_steering_pose()
+	select_reference(original_side)
+func select_reference(seat: int) -> void:
+	if seated_references.has(seat): reference_frames=seated_references[seat]
 func prepare() -> void: pass
 func sample_entry(work: float,_weight: float) -> void:
 	time=-1
@@ -36,10 +72,14 @@ func _pose(section: String,progress: float) -> void:
 	reach_errors.clear()
 	joint_witness.clear()
 	var tiller: String=actor.tiller_hand()
-	var start: Dictionary=_tiller_plan(tiller,actor.from_port(profile.palm_at("helper","right",actor.amount,0)))
-	var finish: Dictionary=_tiller_plan(tiller,actor.from_port(profile.palm_at("helper","right",actor.amount,1)))
+	var start: Dictionary=_tiller_plan(tiller,tiller_goal(profile.palm_at("helper","right",actor.amount,0)))
+	var finish: Dictionary=_tiller_plan(tiller,tiller_goal(profile.palm_at("helper","right",actor.amount,1)))
 	pose_points.clear()
-	if start.valid and finish.valid:
+	if start.valid and actor.hike>0 and hiking_profile!=null:
+		# The hiking low point is authored already. A future helper-end
+		# calculation must not switch today's sheet hand to a different lane.
+		pose_points={"catch":_catch_goal(start.helper),"low":actor.from_port(hiking_profile.low_at(actor.amount,actor.hike))}
+	elif start.valid and finish.valid:
 		var line: Vector3=finish.helper-actor.sheet_study.block_anchor
 		var left: String=actor.sheet_hand()
 		var shoulder: Vector3=actor.bone_pose_boat(left+"UpperArm").origin
@@ -57,7 +97,8 @@ func _pose(section: String,progress: float) -> void:
 			pose_points={"catch":_catch_goal(start.helper),"low":actor.sheet_study.block_anchor+line*fraction}
 	for role in ["right","left"]:
 		var side: String=actor.tiller_hand() if role=="right" else actor.sheet_hand()
-		var goal: Vector3=actor.from_port(profile.palm_at(section,role,actor.amount,progress))
+		var goal: Vector3=working_goal(profile.palm_at(section,role,actor.amount,progress))
+		if role=="right": goal=tiller_goal(profile.palm_at(section,role,actor.amount,progress))
 		if role=="left" and not pose_points.is_empty():
 			if section=="work":
 				var ready: Vector3=pose_points.low.lerp(pose_points.catch,.45)
@@ -66,6 +107,12 @@ func _pose(section: String,progress: float) -> void:
 				var u := smoothstep(.12,.85,progress)
 				goal=pose_points.catch.lerp(pose_points.low,u)+actor.from_port(Vector3(.015,0,-.03))*sin(PI*u)
 			else: goal=pose_points.low.lerp(pose_points.catch,smoothstep(0,1,progress))
+			if actor.hike>0:
+				var travel: Vector3=pose_points.catch-pose_points.low
+				var fraction := clampf((goal-pose_points.low).dot(travel)/travel.length_squared(),0,1)
+				# Knees enter this lane during the first eighth of hiking,
+				# not only at the fully extended body posture.
+				goal+=Vector3(0,0,-.07)*sin(PI*fraction)*smoothstep(0,.125,actor.hike)
 		_solve(side,goal,role=="right")
 	# Partial pressure release follows actual negative feed, not the idle
 	# return flag. The palm and thumb keep their channel; no large arm gesture.
@@ -80,7 +127,11 @@ func _pose(section: String,progress: float) -> void:
 			var rest: Quaternion=actor.skeleton.get_bone_rest(bone).basis.get_rotation_quaternion()
 			actor.skeleton.set_bone_pose_rotation(bone,closed.slerp(rest,opening))
 func _catch_goal(helper: Vector3) -> Vector3:
-	return helper+(helper-actor.sheet_study.block_anchor).normalized()*.04
+	# Regrasp the loaded strand below the supporting thumb when hiking,
+	# rather than forcing both arms to meet beyond it across the upper torso.
+	var offset := .04
+	offset=lerpf(.04,-.14,smoothstep(0,.125,actor.hike))
+	return helper+(helper-actor.sheet_study.block_anchor).normalized()*offset
 func _solve(side: String,palm: Vector3,tiller: bool) -> void:
 	if tiller:
 		_solve_tiller(side,palm)
@@ -104,8 +155,19 @@ func _solve_sheet(side: String,palm: Vector3) -> void:
 	var hips: Vector3=actor.bone_pose_boat("Hips").origin
 	var chest: Vector3=actor.bone_pose_boat("UpperChest").origin
 	var support: float=maxf(hips.dot(normal),chest.dot(normal))+.195
+	if actor.hike>0:
+		# A hiker reaches above a sloping torso. A fixed inboard plane can
+		# reject that clear space; use its actual capsule tangent instead.
+		var near := Geometry3D.get_closest_point_to_segment(palm,hips,chest)
+		normal=(palm-near).normalized()
+		support=maxf(hips.dot(normal),chest.dot(normal))+.195
 	var pole: Vector3=s+actor.from_port(Vector3(-.13,-.30,-.32))
 	var plan := ELBOW.guide(s,palm,s.distance_to(e),e.distance_to(w)+hand_length,pole,normal,support)
+	if actor.hike>0:
+		var free := ELBOW.guide(s,palm,s.distance_to(e),e.distance_to(w)+hand_length,pole,Vector3.ZERO,0)
+		if free.valid:
+			var pair := Geometry3D.get_closest_points_between_segments(free.point,palm,hips,chest)
+			if pair[0].distance_to(pair[1])>=.195: plan=free
 	if not plan.valid:
 		# A single fixed plane can reject a clear forearm on the other side
 		# of the torso. Derive its tangent from the actual extended arm.
@@ -181,6 +243,37 @@ func _tiller_plan(side: String,guide: Vector3) -> Dictionary:
 			if a<=0 or discriminant<0: continue
 			# Exact sphere-to-line clearance, not vertical clearance at Z.
 			guide.y=maxf(guide.y,joint.y+(-half+sqrt(discriminant))/a+.005)
+	if actor.hike>0:
+		var hiking_axis := (guide-joint).normalized()
+		var neck: Vector3=actor.bone_pose_boat("Neck").origin
+		var head: Vector3=actor.bone_pose_boat("Head").origin
+		var hips: Vector3=actor.bone_pose_boat("Hips").origin
+		var chest: Vector3=actor.bone_pose_boat("UpperChest").origin
+		var caps := [[neck,head,.114],[head,head,.154],[hips,chest,.177]]
+		for limb in ["Left","Right"]: caps.append([actor.bone_pose_boat(limb+"UpperLeg").origin,actor.bone_pose_boat(limb+"LowerLeg").origin,.114])
+		# One bounded contact-cone projection includes knees and upper body.
+		# Using the actual closest point avoids aiming past a capsule end;
+		# revisiting all caps prevents a face fix undoing leg clearance.
+		for iteration in 8:
+			var changed := false
+			for cap in caps:
+				var pair := Geometry3D.get_closest_points_between_segments(joint,joint+hiking_axis*actor.extension_span,cap[0],cap[1])
+				if pair[0].distance_to(pair[1])>=float(cap[2])-.000001: continue
+				var centre: Vector3=pair[1]-joint
+				var centre_axis := centre.normalized()
+				var tangent := hiking_axis-centre_axis*hiking_axis.dot(centre_axis)
+				if tangent.is_zero_approx():
+					var preferred: Vector3=actor.from_port(Vector3.RIGHT)
+					tangent=preferred-centre_axis*preferred.dot(centre_axis)
+				var half := asin(clampf(float(cap[2])/centre.length(),0,1))
+				hiking_axis=centre_axis*cos(half)+tangent.normalized()*sin(half)
+				changed=true
+			if not changed: break
+		guide=joint+hiking_axis*guide.distance_to(joint)
+		var held: Transform3D=actor.bone_pose_boat(side+"Hand")
+		var plan := TILLER_PLAN._shared_plan(actor,side,guide,held,s,e,w,true)
+		if plan.valid: plan.helper=plan.wrist+plan.frame*(CONTACT.assist_local(side)*plan.scale)
+		return plan
 	var axis := (guide-joint).normalized()
 	var scale: Vector3=(to_boat.basis*skeleton.get_bone_global_pose(hand).basis).get_scale()
 	var frame: Basis=reference_frames[side]
@@ -220,7 +313,7 @@ func _tiller_plan(side: String,guide: Vector3) -> Dictionary:
 		return {"valid":false,"reason":"tiller roots violate body/drop/span","roots":roots}
 	var palm: Vector3=joint+axis*selected
 	var wrist: Vector3=palm-offset
-	return {"valid":true,"palm":palm,"wrist":wrist,"elbow":selected_elbow,"frame":frame,"scale":scale,"helper":wrist+frame*(CONTACT.ASSIST_LOCAL*scale),"grip_metres":selected,"guide_adjustment_m":palm.distance_to(guide)}
+	return {"valid":true,"palm":palm,"wrist":wrist,"elbow":selected_elbow,"frame":frame,"scale":scale,"helper":wrist+frame*(CONTACT.assist_local(side)*scale),"grip_metres":selected,"guide_adjustment_m":palm.distance_to(guide)}
 
 func _solve_tiller(side: String,guide: Vector3) -> void:
 	var plan := _tiller_plan(side,guide)
@@ -243,7 +336,7 @@ func held_points() -> PackedVector3Array:
 	# The occluded grip interior uses the central60mm, not an artificial
 	# 116mm straight channel protruding past both sides of the closed fist.
 	sheet=sheet.slice(1,4)
-	var helper: PackedVector3Array=CONTACT.helper_channel(actor.bone_pose_boat(actor.tiller_hand()+"Hand"))
+	var helper: PackedVector3Array=CONTACT.helper_channel(actor.bone_pose_boat(actor.tiller_hand()+"Hand"),actor.tiller_hand())
 	var right := time>=1
 	var path := PackedVector3Array([actor.sheet_study.block_anchor])
 	if right:
