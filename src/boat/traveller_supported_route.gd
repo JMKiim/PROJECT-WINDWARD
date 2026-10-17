@@ -8,11 +8,11 @@ const ENDPOINT_TOLERANCE := .0000005
 const LENGTH_TOLERANCE := .0000002
 const MAX_X := .455
 
-static func _leg(boundary: Dictionary, start: Vector3, finish: Vector3) -> Dictionary:
+static func _leg(boundary: Dictionary, start: Vector3, finish: Vector3,tessellate := true) -> Dictionary:
 	var source: Transform3D=boundary.tiller
 	# Existing tiller axis is local Z; the circle primitive uses local X.
 	var frame := Transform3D(Basis(source.basis.z,source.basis.y,-source.basis.x),source.origin)
-	return CABLE.route(frame,boundary.tiller_radius,start,finish,false,false,source.basis.y,boundary.tiller_half_span)
+	return CABLE.route(frame,boundary.tiller_radius,start,finish,false,false,source.basis.y,boundary.tiller_half_span,0,0,tessellate)
 
 static func _near(leg: Dictionary, at_end: bool) -> Vector3:
 	if leg.wrapped: return leg.exit if at_end else leg.entry
@@ -27,10 +27,10 @@ static func _valid(boundary: Dictionary) -> bool:
 		if not is_finite(boundary[key]) or boundary[key]<=0: return false
 	return true
 
-static func route(boundary: Dictionary, center: Vector3) -> Dictionary:
+static func route(boundary: Dictionary, center: Vector3,tessellate := true) -> Dictionary:
 	if not _valid(boundary) or not center.is_finite(): return {"valid":false,"reason":"invalid traveller support boundary"}
-	var approach := _leg(boundary,boundary.starboard,center)
-	var departure := _leg(boundary,center,boundary.port)
+	var approach := _leg(boundary,boundary.starboard,center,false)
+	var departure := _leg(boundary,center,boundary.port,false)
 	if not approach.valid or not departure.valid: return {"valid":false,"reason":"initial leg has unsupported cylinder contact"}
 	var entry := center
 	var exit_point := center
@@ -44,10 +44,10 @@ static func route(boundary: Dictionary, center: Vector3) -> Dictionary:
 		if up.length_squared()<1e-8: up=Vector3.BACK-axle*axle.dot(Vector3.BACK)
 		up=up.normalized()
 		var frame := Transform3D(Basis(axle,up,axle.cross(up)),center)
-		var roller := CABLE.route(frame,boundary.sheave_radius,incoming,outgoing)
+		var roller := CABLE.route(frame,boundary.sheave_radius,incoming,outgoing,true,true,Vector3.ZERO,INF,0,0,false)
 		if not roller.valid: return {"valid":false,"reason":"sheave: "+roller.reason}
-		var next_approach := _leg(boundary,boundary.starboard,roller.entry)
-		var next_departure := _leg(boundary,roller.exit,boundary.port)
+		var next_approach := _leg(boundary,boundary.starboard,roller.entry,false)
+		var next_departure := _leg(boundary,roller.exit,boundary.port,false)
 		if not next_approach.valid or not next_departure.valid: return {"valid":false,"reason":"finite cylinder tangent unsupported"}
 		var error := maxf(entry.distance_to(roller.entry),exit_point.distance_to(roller.exit))
 		error=maxf(error,maxf(incoming.distance_to(_near(next_approach,true)),outgoing.distance_to(_near(next_departure,false))))
@@ -60,6 +60,10 @@ static func route(boundary: Dictionary, center: Vector3) -> Dictionary:
 		var exit_force := (_near(departure,false)-exit_point).normalized()
 		var tangent_error := maxf(entry_force.distance_to(roller.entry_force_per_n),exit_force.distance_to(roller.exit_force_per_n))
 		if tangent_error>.0001: continue
+		if tessellate:
+			approach=_leg(boundary,boundary.starboard,roller.entry,true)
+			departure=_leg(boundary,roller.exit,boundary.port,true)
+			roller=CABLE.route(frame,boundary.sheave_radius,incoming,outgoing)
 		var path: PackedVector3Array=approach.path.duplicate()
 		for index in range(1,roller.arc_path.size()): path.append(roller.arc_path[index])
 		for index in range(1,departure.path.size()): path.append(departure.path[index])

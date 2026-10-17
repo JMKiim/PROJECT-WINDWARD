@@ -10,7 +10,7 @@ var seed := Vector2.ZERO
 
 func _trial(boundary: Dictionary,x: float,radius: float,azimuth: float,a: Vector3,b: Vector3) -> Dictionary:
 	if radius<.008 or radius>.35 or absf(azimuth)>deg_to_rad(75): return {"valid":false}
-	var support := SUPPORT.route(boundary,Vector3(x,radius*cos(azimuth),radius*sin(azimuth)))
+	var support := SUPPORT.route(boundary,Vector3(x,radius*cos(azimuth),radius*sin(azimuth)),false)
 	if not support.valid: return support
 	var axis: Vector3=(a-support.center).cross(b-a).normalized()
 	return {"valid":true,"support":support,"axis":axis,"error":axis.dot(support.frame.basis.x),"radius":radius,"azimuth":azimuth}
@@ -48,6 +48,12 @@ func solve(boundary: Dictionary,length: float,x: float,a: Vector3,b: Vector3,low
 	if trial.is_empty() or absf(trial.support.length-length)>SUPPORT.LENGTH_TOLERANCE or absf(trial.error)>.000001:
 		return {"valid":false,"reason":"prescribed support closure not reached","trial":trial,"seed":v}
 	seed=Vector2(trial.radius,trial.azimuth)
+	# The nonlinear closure above uses exact analytic geometry without
+	# rebuilding its display mesh at every trial/derivative. Same center,
+	# same tolerance; construct the accepted dense path once.
+	var final_support := SUPPORT.route(local,trial.support.center)
+	if not final_support.valid: return final_support
+	trial.support=final_support
 	var normal: Vector3=trial.support.frame.basis.x
 	var pin_axis: Vector3=(trial.axis-normal*normal.dot(trial.axis)).normalized()
 	var up := normal.cross(pin_axis).normalized()

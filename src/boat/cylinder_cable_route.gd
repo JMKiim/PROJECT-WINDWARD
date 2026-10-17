@@ -6,7 +6,7 @@ extends RefCounted
 const PLANE_TOLERANCE := .000002
 const CHORD_ERROR := .000001
 
-static func route(frame: Transform3D, radius: float, start: Vector3, finish: Vector3, planar := true, required_wrap := true, preferred := Vector3.ZERO, half_span := INF, minimum_leg_separation := 0.0, winding := 0.0) -> Dictionary:
+static func route(frame: Transform3D, radius: float, start: Vector3, finish: Vector3, planar := true, required_wrap := true, preferred := Vector3.ZERO, half_span := INF, minimum_leg_separation := 0.0, winding := 0.0, tessellate := true) -> Dictionary:
 	if not frame.is_finite() or not start.is_finite() or not finish.is_finite() or not preferred.is_finite() or not is_finite(radius) or radius<=0 or is_nan(half_span) or half_span<=0 or not is_finite(minimum_leg_separation) or minimum_leg_separation<0 or winding not in [-1.0,0.0,1.0]:
 		return {"valid":false,"reason":"invalid circular support boundary"}
 	if not frame.basis.is_equal_approx(frame.basis.orthonormalized()) or frame.basis.determinant()<.99999:
@@ -66,7 +66,10 @@ static func route(frame: Transform3D, radius: float, start: Vector3, finish: Vec
 					var material_gap := pair[0].distance_to(entry_local)+arc*length/developed+pair[1].distance_to(exit_local)
 					if material_gap>PI*minimum_leg_separation and pair[0].distance_to(pair[1])<minimum_leg_separation: continue
 				if not best.is_empty() and length>=best.length: continue
-				var steps := maxi(2,ceili(absf(sweep)/(2*acos(clampf(1-CHORD_ERROR/radius,-1,1)))))
+				# Closure iterations need exact tangencies/analytic length, not
+				# hundreds of display vertices. Both endpoint expressions remain
+				# identical; the accepted route is tessellated only once later.
+				var steps := maxi(2,ceili(absf(sweep)/(2*acos(clampf(1-CHORD_ERROR/radius,-1,1))))) if tessellate else 1
 				var arc_path := PackedVector3Array()
 				for index in steps+1:
 					var fraction := index/float(steps)

@@ -52,6 +52,14 @@ func _surface_line(a: Vector3,b: Vector3) -> PackedVector3Array:
 	return result
 func _surface_distance(a: Vector3,b: Vector3) -> float:
 	return STOPPER.length_of(_surface_line(a,b))
+func _touch_point(outlet: Vector3) -> Vector3:
+	var x := clampf(outlet.x,-.55,.55)
+	var z := .31
+	return Vector3(x,hull.cockpit_floor_y_at(x,z)+RADIUS+.002,z)
+func _fall_path(outlet: Vector3,touch: Vector3,caps: Array) -> PackedVector3Array:
+	return GRAVITY_PATH.fall(outlet,touch,caps,hull,actor.from_port(Vector3.RIGHT))
+func _place_end(endpoint: Vector3) -> PackedVector3Array:
+	return FREE_END.place(endpoint,hull,actor)
 func _prefix() -> PackedVector3Array:
 	var player: Node=actor.sheet_control.regrip
 	var sheet: PackedVector3Array=actor.sheet_channel_boat().slice(1,4)
@@ -155,9 +163,7 @@ func build(cockpit_metres: float) -> Dictionary:
 	var prefix := _prefix()
 	if prefix.size()<2: return {"valid":false,"reason":"grasp outlet missing"}
 	var outlet := prefix[-1]
-	var x := clampf(outlet.x,-.55,.55)
-	var z := .31
-	var touch := Vector3(x,hull.cockpit_floor_y_at(x,z)+RADIUS+.002,z)
+	var touch := _touch_point(outlet)
 	var contact_caps := _caps([["Hips","UpperChest",.164],["LeftUpperLeg","LeftLowerLeg",.104],["RightUpperLeg","RightLowerLeg",.104],["LeftLowerLeg","LeftFoot",.080],["RightLowerLeg","RightFoot",.080],["LeftFoot","LeftToes",.066],["RightFoot","RightToes",.066]])
 	var route_caps := _caps([["Hips","UpperChest",.1569],["LeftUpperLeg","LeftLowerLeg",.0969],["RightUpperLeg","RightLowerLeg",.0969],["LeftLowerLeg","LeftFoot",.078],["RightLowerLeg","RightFoot",.078],["LeftFoot","LeftToes",.065],["RightFoot","RightToes",.065]])
 	var signature := [prefix,cockpit_metres,actor.seat_side,contact_caps,grasp_knots]
@@ -166,8 +172,8 @@ func build(cockpit_metres: float) -> Dictionary:
 	if geometry!=geometry_signature:
 		routed_prefix=_route_prefix(prefix,route_caps)
 		outlet=routed_prefix[-1]
-		touch=Vector3(clampf(outlet.x,-.55,.55),hull.cockpit_floor_y_at(clampf(outlet.x,-.55,.55),z)+RADIUS+.002,z)
-		fall_profile=GRAVITY_PATH.fall(outlet,touch,contact_caps,hull,actor.from_port(Vector3.RIGHT))
+		touch=_touch_point(outlet)
+		fall_profile=_fall_path(outlet,touch,contact_caps)
 		geometry_signature=geometry.duplicate(true)
 	prefix=routed_prefix
 	outlet=prefix[-1]
@@ -184,7 +190,7 @@ func build(cockpit_metres: float) -> Dictionary:
 		free_path=FREE_END.cut(free_path,cockpit_metres-held_length)
 		var result := prefix.duplicate()
 		result.append_array(free_path.slice(1))
-		var ending := FREE_END.place(result[-1],hull,actor)
+		var ending := _place_end(result[-1])
 		last_result={"valid":true,"path":result,"end_path":ending,"fall_path":free_path,"held_metres":held_length,"suspended_metres":minf(suspended,STOPPER.length_of(free_path)),"floor_metres":maxf(0,STOPPER.length_of(free_path)-suspended),"logical_cockpit_metres":cockpit_metres,"display_error_m":STOPPER.length_of(result)-cockpit_metres,"floor_points":0,"outlet":outlet,"touch":result[-1],"routing":routing,"grounded":false}
 		last_result.dynamic_path=result
 		last_result.pile_points=0
