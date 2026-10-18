@@ -11,11 +11,11 @@ func crossing() -> bool:
 func set_amount(value: float) -> void:
 	if not crossing(): super.set_amount(value); return
 	if not is_finite(value): return
-	maneuver.steering=clampf(value,-1,1)*(-1 if maneuver.phase=="EXIT" else 1)
+	maneuver.steering=clampf(value,-1,1)*-seat_side
 	maneuver.compose()
 func request_amount(value: float) -> void:
 	if not crossing(): super.request_amount(value); return
-	if is_finite(value): maneuver.steering_target=clampf(value,-1,1)*(-1 if maneuver.phase=="EXIT" else 1)
+	if is_finite(value): maneuver.steering_target=clampf(value,-1,1)*-seat_side
 func tiller_hand() -> String:
 	if crossing() and not maneuver.result.is_empty(): return maneuver.result.ownership.primary_tool
 	return super.tiller_hand()

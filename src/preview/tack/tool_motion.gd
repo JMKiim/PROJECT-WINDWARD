@@ -134,3 +134,33 @@ func _tool_fingers(side: String,seat: int,u: float) -> void:
 			var held := pose.basis.get_rotation_quaternion()
 			var release := .85*smoothstep(.52,.56,u) if side=="Right" and digit!="Thumb" else 0.0
 			actor.skeleton.set_bone_pose_rotation(bone,held.slerp(actor.skeleton.get_bone_rest(bone).basis.get_rotation_quaternion(),release))
+func settle_upper_twist(side: String,weight: float) -> void:
+	if weight<=0: return
+	var sk: Skeleton3D=actor.skeleton
+	var upper := sk.find_bone(side+"UpperArm")
+	var lower := sk.find_bone(side+"LowerArm")
+	var arm := sk.get_bone_global_pose(upper)
+	var fore := sk.get_bone_global_pose(lower)
+	var hand := sk.find_bone(side+"Hand")
+	var grasp := sk.get_bone_global_pose(hand)
+	var axis := (fore.origin-arm.origin).normalized()
+	# The interpolated endpoint bend frames can carry an almost reversed
+	# humeral roll through the body turn. Use the clavicle-relative rest
+	# swing as the skin's axial reference, not the forearm's bend plane.
+	# Only roll changes: restore the entire distal chain in world space.
+	var reference: Basis=(sk.get_bone_global_pose(sk.get_bone_parent(upper)).basis*sk.get_bone_rest(upper).basis).orthonormalized()
+	var rest_axis := (reference*sk.get_bone_rest(lower).origin).normalized()
+	var target := Basis(Quaternion(rest_axis,axis))*reference
+	var neutral := arm.basis.x-axis*arm.basis.x.dot(axis)
+	var desired := target.x-axis*target.x.dot(axis)
+	if neutral.length_squared()<.000001 or desired.length_squared()<.000001:
+		neutral=arm.basis.z-axis*arm.basis.z.dot(axis)
+		desired=target.z-axis*target.z.dot(axis)
+	var roll := neutral.normalized().signed_angle_to(desired.normalized(),axis)
+	arm.basis=Basis(axis,roll*weight)*arm.basis
+	sk.set_bone_global_pose(upper,arm)
+	sk.force_update_bone_child_transform(upper)
+	sk.set_bone_global_pose(lower,fore)
+	sk.force_update_bone_child_transform(lower)
+	sk.set_bone_global_pose(hand,grasp)
+	sk.force_update_bone_child_transform(hand)

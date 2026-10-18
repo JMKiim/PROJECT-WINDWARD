@@ -5,7 +5,12 @@ extends RefCounted
 static func capture(model: RefCounted,u: float) -> Dictionary:
 	var actor: Node3D=model.actor
 	var seat := -1 if u<.5 else 1
+	# Capture the original articulated bridge, not compensated local
+	# upper/lower rotations whose interpolation would move the grasp.
+	var surface_enabled: bool=model.upper_surface_enabled
+	model.upper_surface_enabled=false
 	var result: Dictionary=model.sample(u)
+	model.upper_surface_enabled=surface_enabled
 	var bones := []
 	for index in actor.skeleton.get_bone_count(): bones.append(actor.skeleton.get_bone_pose(index))
 	return {"normal":model.body.endpoints[seat].bones,"normal_root":model.body.endpoints[seat].root,"crossing":bones,"crossing_root":actor.get_node("Pose").transform,"result":result}

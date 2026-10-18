@@ -13,6 +13,7 @@ var lab: Node3D
 var actor: Node3D
 var model: RefCounted
 var phase := "IDLE"
+var source_side := -1
 var progress := 0.0
 var clock_progress := 0.0
 var steering := 0.0
@@ -53,14 +54,17 @@ func setup(value: Node3D) -> bool:
 		return false
 	return true
 func busy() -> bool: return phase!="IDLE"
+func manual_trim_stage() -> bool: return false
+func is_gybe() -> bool: return false
+func action_name() -> String: return "태킹"
+func completion_fraction() -> float: return progress if source_side==-1 else 1-progress
+func destination_name() -> String: return "우현" if source_side==-1 else "좌현"
 func request() -> bool:
 	if busy(): return false
-	if actor.seat_side!=-1:
-		lab.session.notice="현재 연속 태킹은 좌현에서 우현 방향을 먼저 확인 중이에요."
-		return false
 	if lab.session.reference_fixture or lab.session.selected_system!=0:
 		lab.session.notice="메인시트 수동 조작 상태에서 시작해 주세요."
 		return false
+	source_side=actor.seat_side
 	retained_trim=lab.session.wheel_pull.metres
 	lab.session.wheel_pull.pause()
 	lab.session.request_hike(0)
@@ -78,11 +82,13 @@ func advance(delta: float) -> void:
 		actor.set_look(lab.look_yaw,lab.look_pitch)
 		var wheel: RefCounted=lab.session.wheel_pull
 		if gaze_weight>0 or actor.hike>.000001 or actor.grip_phase!="HOLD" or wheel.state!="REST" or absf(wheel.work-.5)>.000001 or actor.sheet_control.ease_relaxation>.000001: return
-		steering=actor.amount
-		steering_target=actor.steering_target
+		# Steering is a boat-space coordinate. Normal seated controls use
+		# opposite push/pull signs on the two sides of the cockpit.
+		steering=-source_side*actor.amount
+		steering_target=-source_side*actor.steering_target
 		sampled_steering=INF
-		progress=0
-		clock_progress=0
+		progress=0 if source_side==-1 else 1
+		clock_progress=progress
 		initial_yaw=absf(lab.rig_display.fitted_yaw)
 		end_yaw=-initial_yaw
 		end_signature.clear()
@@ -99,7 +105,7 @@ func advance(delta: float) -> void:
 		actor.set_look(lab.look_yaw,lab.look_pitch)
 		if gaze_weight>=1:
 			phase="IDLE"
-			lab.session.notice="우현 태킹 완료 · W/S·휠 시트와 X/Z 하이크를 계속 조작할 수 있어요."
+			lab.session.notice=destination_name()+" 태킹 완료 · W/S·휠 시트와 X/Z 하이크를 계속 조작할 수 있어요."
 		return
 	if phase in ["ENTRY","EXIT"]:
 		steering=move_toward(steering,steering_target,minf(delta,.1)*1.5)
@@ -118,9 +124,9 @@ func advance(delta: float) -> void:
 		return
 	if phase!="CROSS": return
 	steering=move_toward(steering,steering_target,minf(delta,.1)*1.5)
-	clock_progress=minf(1,clock_progress+minf(delta,.1)/DURATION)
+	clock_progress=move_toward(clock_progress,1.0 if source_side==-1 else 0.0,minf(delta,.1)/DURATION)
 	compose()
-	if clock_progress>=1: finish()
+	if source_side==-1 and clock_progress>=1 or source_side==1 and clock_progress<=0: finish()
 func seek(u: float) -> void:
 	clock_progress=TIMELINE.time_for(u)
 	compose()
@@ -136,12 +142,22 @@ func compose() -> void:
 		actor.look_enabled=looked
 		actor.endpoint_sampling=false
 		sampled_steering=steering
+	# The authored path is in the same boat-space frame in both directions.
+	# No mirrored skeleton, handedness swap or inspection cut is involved.
+	actor.seat_side=-1
 	actor.amount=steering
 	actor.steering_target=steering_target
 	result=model.sample(clock_progress)
+	if source_side==1:
+		# Reversing the actual hand phases closes the incoming right hand
+		# before opening the outgoing left hand. Relabel the phase, not the
+		# physical contacts, fingers or sheet-support channels.
+		result.elapsed_phase=1-clock_progress
+		if result.handoff_stage=="GRIP": result.handoff_stage="RELEASE"
+		elif result.handoff_stage=="RELEASE": result.handoff_stage="GRIP"
 	progress=result.geometry_u
 	if actor.neck_cap!=null and actor.neck_cap.visible: actor.neck_cap.update_pose()
-	lab.session.notice="태킹 %.0f%% · 트림 유지 · A/D 조타와 시점은 계속 조작할 수 있어요."%(progress*100)
+	lab.session.notice="%s 태킹 %.0f%% · 트림 유지 · A/D 조타와 시점은 계속 조작할 수 있어요."%[destination_name(),completion_fraction()*100]
 	compose_ms=(Time.get_ticks_usec()-started)/1000.0
 func finish() -> void:
 	phase="EXIT"
@@ -151,18 +167,19 @@ func finish() -> void:
 	gaze_weight=0
 	lab.review_options.model.display_budget=NAN
 	actor.endpoint_sampling=true
-	actor.set_side(1)
-	actor.set_amount(-steering)
-	actor.request_amount(-steering_target)
+	actor.set_side(-source_side)
+	actor.set_amount(source_side*steering)
+	actor.request_amount(source_side*steering_target)
 	actor.endpoint_sampling=false
-	lab.session.requested_side=1
+	lab.session.requested_side=-source_side
 	lab.session.requested_hike=0
 	lab.session.posture_pending=false
 	compose_bridge()
-	lab.session.notice="우현 자세와 시선을 연결하고 있어요."
+	lab.session.notice=destination_name()+" 자세와 시선을 연결하고 있어요."
 func compose_bridge() -> void:
 	if phase not in ["ENTRY","EXIT"]: return
 	var u := 0.0 if phase=="ENTRY" else 1.0
+	if source_side==1: u=1-u
 	if not is_equal_approx(steering,bridge_steering):
 		actor.endpoint_sampling=true
 		var looked: bool=actor.look_enabled
@@ -176,9 +193,10 @@ func compose_bridge() -> void:
 	var weight: float=smoothstep(0,BRIDGE_SECONDS,bridge_time)
 	if phase=="EXIT": weight=1-weight
 	BRIDGE.apply(actor,bridge_data,weight)
-	actor.seat_side=-1 if phase=="ENTRY" else 1
-	actor.amount=steering if phase=="ENTRY" else -steering
-	actor.steering_target=steering_target if phase=="ENTRY" else -steering_target
+	for side in ["Left","Right"]: model.settle_upper_twist(side,weight)
+	actor.seat_side=source_side if phase=="ENTRY" else -source_side
+	actor.amount=-actor.seat_side*steering
+	actor.steering_target=-actor.seat_side*steering_target
 func cancel() -> void:
 	phase="IDLE"
 	gaze_weight=1
@@ -190,6 +208,7 @@ func cancel() -> void:
 	if lab!=null and lab.review_options.model.get("display_budget")!=null: lab.review_options.model.display_budget=NAN
 func _fit_end_yaw() -> bool:
 	var signature := [steering,lab.session.wheel_pull.metres]
+	if source_side==1: signature=[retained_trim]
 	if signature==end_signature: return true
 	var saved_progress := progress
 	var sheet_model: RefCounted=lab.review_options.model
@@ -215,6 +234,7 @@ func _fit_start_yaw() -> bool:
 	# steering frame. Re-fitting the hypothetical source every frame both
 	# changes the intended spar path and repeats expensive rig work.
 	var signature := [retained_trim]
+	if source_side==1: signature=[steering,lab.session.wheel_pull.metres]
 	if signature==start_signature: return true
 	var saved_progress := progress
 	var sheet_model: RefCounted=lab.review_options.model
@@ -240,15 +260,18 @@ func update_geometry() -> bool:
 	geometry_profile={"build_ms":0.0,"rig_ms":0.0,"show_ms":0.0,"end_fit_ms":0.0}
 	if record_geometry_trace: geometry_profile.iterations=[]
 	var fit_started := Time.get_ticks_usec()
-	if not _fit_start_yaw():
+	var source_fitted: bool=_fit_start_yaw() if source_side==-1 else _fit_end_yaw()
+	if not source_fitted:
 		geometry_error="태킹 시작 리그 연결을 확인해 주세요."
 		return false
-	if progress>=.96 and not _fit_end_yaw():
+	var target_needed: bool=progress>=.96 if source_side==-1 else progress<=.04
+	var target_fitted: bool=true
+	if target_needed: target_fitted=_fit_end_yaw() if source_side==-1 else _fit_start_yaw()
+	if not target_fitted:
 		geometry_error="태킹 끝 리그 연결을 확인해 주세요."
 		return false
 	geometry_profile.end_fit_ms=(Time.get_ticks_usec()-fit_started)/1000.0
-	var yaw := BOOM.yaw(initial_yaw,-initial_yaw,progress)
-	if progress>=.96: yaw=lerpf(yaw,end_yaw,smoothstep(.96,1,progress))
+	var yaw := _prescribed_yaw()
 	var rig: Node3D=lab.rig_display.rig
 	var sheet_model: RefCounted=lab.review_options.model
 	var ledger: RefCounted=lab.complete_sheet.ledger
@@ -349,6 +372,13 @@ func update_geometry() -> bool:
 	geometry_profile.floor_evaluations=sheet_model.floor_evaluations
 	geometry_profile.cockpit_rod_unresolved=sheet_model.rod_unresolved.duplicate()
 	return geometry_valid
+func _prescribed_yaw() -> float:
+	var yaw := BOOM.yaw(initial_yaw,-initial_yaw,progress)
+	if source_side==1:
+		yaw=BOOM.yaw(-end_yaw,end_yaw,progress)
+		if progress<=.04: yaw=lerpf(yaw,initial_yaw,1-smoothstep(0,.04,progress))
+	elif progress>=.96: yaw=lerpf(yaw,end_yaw,smoothstep(.96,1,progress))
+	return yaw
 func _probe_display(local_result: Dictionary,yaw: float) -> Dictionary:
 	var rig: Node3D=lab.rig_display.rig
 	var dynamic: PackedVector3Array=local_result.dynamic_path

@@ -10,6 +10,7 @@ var use_open_hand_patch := true
 var incoming_open_override := NAN
 var outgoing_open_override := NAN
 var approach_authoring := false
+var upper_surface_enabled := true
 func _tool_fingers(side: String,seat: int,u: float) -> void:
 	super._tool_fingers(side,seat,u)
 	var weight: float=incoming_open_override if side=="Left" else outgoing_open_override
@@ -45,6 +46,8 @@ func set_steering(value: float) -> void:
 func sample(u: float) -> Dictionary:
 	var result: Dictionary=super.sample(u)
 	result.free=FREE.apply(self,u)
+	if upper_surface_enabled:
+		for side in ["Left","Right"]: settle_upper_twist(side,1)
 	result.ownership={
 		"tool_hands":["Right"] if u<.50 else (["Right","Left"] if u<=.52 else ["Left"]),
 		"primary_tool":"Right" if u<.52 else "Left",
