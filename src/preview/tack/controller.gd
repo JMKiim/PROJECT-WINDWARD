@@ -82,22 +82,7 @@ func advance(delta: float) -> void:
 		actor.set_look(lab.look_yaw,lab.look_pitch)
 		var wheel: RefCounted=lab.session.wheel_pull
 		if gaze_weight>0 or actor.hike>.000001 or actor.grip_phase!="HOLD" or wheel.state!="REST" or absf(wheel.work-.5)>.000001 or actor.sheet_control.ease_relaxation>.000001: return
-		# Steering is a boat-space coordinate. Normal seated controls use
-		# opposite push/pull signs on the two sides of the cockpit.
-		steering=-source_side*actor.amount
-		steering_target=-source_side*actor.steering_target
-		sampled_steering=INF
-		progress=0 if source_side==-1 else 1
-		clock_progress=progress
-		initial_yaw=absf(lab.rig_display.fitted_yaw)
-		end_yaw=-initial_yaw
-		end_signature.clear()
-		start_signature.clear()
-		geometry_signature.clear()
-		phase="ENTRY"
-		bridge_time=0
-		bridge_steering=INF
-		compose_bridge()
+		_begin_entry()
 		return
 	if phase=="POST":
 		gaze_time=minf(GAZE_SECONDS,gaze_time+delta)
@@ -109,9 +94,10 @@ func advance(delta: float) -> void:
 		return
 	if phase in ["ENTRY","EXIT"]:
 		steering=move_toward(steering,steering_target,minf(delta,.1)*1.5)
-		bridge_time=minf(BRIDGE_SECONDS,bridge_time+delta)
+		var seconds := _bridge_seconds()
+		bridge_time=minf(seconds,bridge_time+delta)
 		compose_bridge()
-		if bridge_time>=BRIDGE_SECONDS:
+		if bridge_time>=seconds:
 			if phase=="ENTRY":
 				initial_yaw=absf(lab.rig_display.fitted_yaw)
 				end_yaw=-initial_yaw
@@ -127,6 +113,25 @@ func advance(delta: float) -> void:
 	clock_progress=move_toward(clock_progress,1.0 if source_side==-1 else 0.0,minf(delta,.1)/DURATION)
 	compose()
 	if source_side==-1 and clock_progress>=1 or source_side==1 and clock_progress<=0: finish()
+func _begin_entry() -> void:
+	# Steering stays in boat space on both seats. The default T preparation
+	# still calls this only after its unchanged REST/.5 readiness check.
+	steering=-source_side*actor.amount
+	steering_target=-source_side*actor.steering_target
+	sampled_steering=INF
+	progress=0 if source_side==-1 else 1
+	clock_progress=progress
+	initial_yaw=absf(lab.rig_display.fitted_yaw)
+	end_yaw=-initial_yaw
+	end_signature.clear()
+	start_signature.clear()
+	geometry_signature.clear()
+	phase="ENTRY"
+	bridge_time=0
+	bridge_steering=INF
+	compose_bridge()
+func _bridge_seconds() -> float: return BRIDGE_SECONDS
+func _capture_bridge(u: float) -> Dictionary: return BRIDGE.capture(model,u)
 func seek(u: float) -> void:
 	clock_progress=TIMELINE.time_for(u)
 	compose()
@@ -185,12 +190,12 @@ func compose_bridge() -> void:
 		var looked: bool=actor.look_enabled
 		actor.look_enabled=false
 		model.set_steering(steering)
-		bridge_data=BRIDGE.capture(model,u)
+		bridge_data=_capture_bridge(u)
 		actor.look_enabled=looked
 		actor.endpoint_sampling=false
 		bridge_steering=steering
 	result=bridge_data.result
-	var weight: float=smoothstep(0,BRIDGE_SECONDS,bridge_time)
+	var weight: float=smoothstep(0,_bridge_seconds(),bridge_time)
 	if phase=="EXIT": weight=1-weight
 	BRIDGE.apply(actor,bridge_data,weight)
 	for side in ["Left","Right"]: model.settle_upper_twist(side,weight)

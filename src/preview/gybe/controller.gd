@@ -1,9 +1,12 @@
 extends "res://src/preview/tack/controller.gd"
 const GYBE_BOOM := preload("res://src/preview/gybe/boom.gd")
+const PULL_ENTRY := preload("res://src/preview/gybe/pull_entry.gd")
 const PRACTICE_PULL_METRES := .30
 var gybing := false
 var trim_low := 0.0
 var trim_at_cross := 0.0
+var pull_entry := {}
+var entry_contact := {}
 func is_gybe() -> bool: return gybing
 func action_name() -> String: return "자이빙" if gybing else "태킹"
 func manual_trim_stage() -> bool: return phase in ["TRIM","EASE"]
@@ -19,7 +22,8 @@ func request_gybe() -> bool:
 		phase="IDLE"
 		if not super.request(): phase="TRIM"; return false
 		trim_at_cross=retained_trim
-		lab.session.notice="자이빙 · 당긴 트림을 지지하며 몸과 붐을 넘길 준비를 해요."
+		_try_pull_entry()
+		lab.session.notice="자이빙 · 당긴 시트를 지지하며 몸과 붐 전환으로 이어가요."
 		return true
 	if phase=="EASE":
 		if trim_at_cross-lab.session.wheel_pull.metres<PRACTICE_PULL_METRES-.000001:
@@ -48,6 +52,12 @@ func advance(delta: float) -> void:
 		trim_low=minf(trim_low,float(lab.session.wheel_pull.metres))
 		_trim_notice()
 		return
+	if gybing and phase=="PREP":
+		gaze_time=minf(GAZE_SECONDS,gaze_time+delta)
+		gaze_weight=1-smoothstep(0,GAZE_SECONDS,gaze_time)
+		actor.set_look(lab.look_yaw,lab.look_pitch)
+		_try_pull_entry()
+		return
 	var previous: String=phase
 	super.advance(delta)
 	if not gybing: return
@@ -56,6 +66,32 @@ func advance(delta: float) -> void:
 		gaze_weight=1
 		_trim_notice()
 	else: lab.session.notice=lab.session.notice.replace("태킹","자이빙")
+func _try_pull_entry() -> void:
+	if not PULL_ENTRY.ready(actor,lab.session.wheel_pull): return
+	pull_entry=PULL_ENTRY.retain(actor)
+	PULL_ENTRY.park(lab.session.wheel_pull)
+	lab.review_options.model.display_budget=NAN
+	_begin_entry()
+func _bridge_seconds() -> float:
+	return PULL_ENTRY.SECONDS if phase=="ENTRY" and not pull_entry.is_empty() else super._bridge_seconds()
+func _capture_bridge(u: float) -> Dictionary:
+	if phase=="ENTRY" and not pull_entry.is_empty(): return PULL_ENTRY.capture(model,u,pull_entry)
+	return super._capture_bridge(u)
+func compose_bridge() -> void:
+	super.compose_bridge()
+	if phase=="ENTRY" and not pull_entry.is_empty():
+		var weight := smoothstep(0,PULL_ENTRY.SECONDS,bridge_time)
+		entry_contact=PULL_ENTRY.align_tool(model,weight)
+		entry_contact.sheet=PULL_ENTRY.clear_sheet_grasp(model,weight)
+		entry_contact.valid=entry_contact.valid and entry_contact.sheet.valid
+		if not entry_contact.valid: lab.session.notice="자이빙 진입의 익스텐션 접촉을 확인해 주세요."
+		gaze_weight=1-weight
+		actor.look_pose.yaw=pull_entry.yaw*gaze_weight
+		actor.look_pose.pitch=pull_entry.pitch*gaze_weight
+		actor.sheet_control.regrip.clip_time=lerpf(pull_entry.work,.5,1-gaze_weight)
+func entry_sheet_prefix() -> Dictionary:
+	if phase!="ENTRY" or pull_entry.is_empty(): return {}
+	return PULL_ENTRY.prefix(actor,pull_entry,smoothstep(0,PULL_ENTRY.SECONDS,bridge_time))
 func _trim_notice() -> void:
 	var metres: float=lab.session.wheel_pull.metres
 	if phase=="TRIM":
@@ -80,3 +116,5 @@ func cancel() -> void:
 	gybing=false
 	trim_low=0
 	trim_at_cross=0
+	pull_entry.clear()
+	entry_contact.clear()

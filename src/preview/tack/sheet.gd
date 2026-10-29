@@ -40,7 +40,13 @@ var route_ms := 0.0
 var floor_ms := 0.0
 var floor_evaluations := 0
 func _fall_path(outlet: Vector3,touch: Vector3,caps: Array) -> PackedVector3Array:
-	if not crossing(): return super._fall_path(outlet,touch,caps)
+	if not crossing():
+		var normal: PackedVector3Array=super._fall_path(outlet,touch,caps)
+		if not _retained_entry(): return normal
+		var axis: Vector3=(actor.palm_boat()-actor.joint_boat()).normalized()
+		var retained := ROD.route(normal,actor.joint_boat(),axis,actor.extension_span,caps,true)
+		rod_unresolved.append_array(retained.unresolved)
+		return retained.path
 	var started := Time.get_ticks_usec()
 	var result := preload("res://src/preview/tack/gravity_strand.gd").fall(outlet,touch,caps,hull,_away())
 	result=FLOOR.path(result,hull)
@@ -58,6 +64,8 @@ func adopt(source: RefCounted,controller: RefCounted) -> void:
 	end_path=source.end_path
 	maneuver=controller
 func crossing() -> bool: return maneuver!=null and maneuver.phase=="CROSS"
+func _retained_entry() -> bool:
+	return maneuver!=null and maneuver.phase=="ENTRY" and maneuver.has_method("entry_sheet_prefix") and maneuver.is_gybe()
 func build(cockpit_metres: float) -> Dictionary:
 	var desired := display_budget if crossing() and is_finite(display_budget) else cockpit_metres
 	var result: Dictionary=super.build(desired)
@@ -68,6 +76,11 @@ func build(cockpit_metres: float) -> Dictionary:
 		result.display_error_m=STOPPER.length_of(result.path)-cockpit_metres
 	return result
 func _prefix() -> PackedVector3Array:
+	if maneuver!=null and maneuver.phase=="ENTRY" and maneuver.has_method("entry_sheet_prefix"):
+		var entry: Dictionary=maneuver.entry_sheet_prefix()
+		if not entry.is_empty():
+			grasp_knots=entry.knots
+			return entry.path
 	if not crossing() or maneuver.result.is_empty(): return super._prefix()
 	var u: float=maneuver.progress
 	var owner: Dictionary=maneuver.result.ownership
@@ -174,7 +187,21 @@ func _floor_parameter_impl(touch: Vector3,available: float) -> Dictionary:
 			previous_side=1
 	return _at((low+high)*.5)
 func _route_prefix(path: PackedVector3Array,caps: Array) -> PackedVector3Array:
-	if not crossing(): return super._route_prefix(path,caps)
+	if not crossing():
+		var normal: PackedVector3Array=super._route_prefix(path,caps)
+		if not _retained_entry(): return normal
+		rod_unresolved.clear()
+		var joint: Vector3=actor.joint_boat()
+		var axis: Vector3=(actor.palm_boat()-joint).normalized()
+		# Skipping inside FREE vertices must never erase an actual grasp.
+		for index in grasp_knots:
+			var near := Geometry3D.get_closest_point_to_segment(path[index],joint,joint+axis*actor.extension_span)
+			if path[index].distance_to(near)<.020:
+				rod_unresolved.append({"reason":"retained grasp inside shaft","knot":index})
+				return normal
+		var supported := ROD.route(normal,joint,axis,actor.extension_span,caps,true)
+		rod_unresolved.append_array(supported.unresolved)
+		return supported.path
 	var started := Time.get_ticks_usec()
 	rod_unresolved.clear()
 	var body_caps := caps.duplicate()
