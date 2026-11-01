@@ -138,12 +138,15 @@ func _solve(side: String,palm: Vector3,tiller: bool) -> void:
 		return
 	_solve_sheet(side,palm)
 
+func _skeleton_frame() -> Transform3D:
+	return actor.skeleton_to_boat() if actor.has_method("skeleton_to_boat") else actor.global_transform.affine_inverse()*actor.skeleton.global_transform
+
 func _solve_sheet(side: String,palm: Vector3) -> void:
 	var skeleton: Skeleton3D=actor.skeleton
 	var upper := skeleton.find_bone(side+"UpperArm")
 	var lower := skeleton.find_bone(side+"LowerArm")
 	var hand := skeleton.find_bone(side+"Hand")
-	var to_boat: Transform3D=actor.global_transform.affine_inverse()*skeleton.global_transform
+	var to_boat: Transform3D=_skeleton_frame()
 	var inverse := to_boat.affine_inverse()
 	var s: Vector3=(to_boat*skeleton.get_bone_global_pose(upper)).origin
 	var e: Vector3=(to_boat*skeleton.get_bone_global_pose(lower)).origin
@@ -214,7 +217,7 @@ func _tiller_plan(side: String,guide: Vector3) -> Dictionary:
 	var upper := skeleton.find_bone(side+"UpperArm")
 	var lower := skeleton.find_bone(side+"LowerArm")
 	var hand := skeleton.find_bone(side+"Hand")
-	var to_boat: Transform3D=actor.global_transform.affine_inverse()*skeleton.global_transform
+	var to_boat: Transform3D=_skeleton_frame()
 	var inverse := to_boat.affine_inverse()
 	var s: Vector3=(to_boat*skeleton.get_bone_global_pose(upper)).origin
 	var e: Vector3=(to_boat*skeleton.get_bone_global_pose(lower)).origin
@@ -324,7 +327,7 @@ func _solve_tiller(side: String,guide: Vector3) -> void:
 	var upper := skeleton.find_bone(side+"UpperArm")
 	var lower := skeleton.find_bone(side+"LowerArm")
 	var hand := skeleton.find_bone(side+"Hand")
-	var to_boat: Transform3D=actor.global_transform.affine_inverse()*skeleton.global_transform
+	var to_boat: Transform3D=_skeleton_frame()
 	var inverse := to_boat.affine_inverse()
 	LIMB.solve(skeleton,upper,lower,hand,inverse*plan.wrist,inverse*plan.elbow)
 	var global_hand: Transform3D=skeleton.get_bone_global_pose(hand)

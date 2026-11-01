@@ -45,12 +45,12 @@ func sample(u: float) -> Dictionary:
 	if not is_zero_approx(lean):
 		var spine := sk.find_bone("Spine")
 		var transform := sk.get_bone_global_pose(spine)
-		var to_boat: Basis=actor.global_basis.inverse()*sk.global_basis
+		var to_boat: Basis=actor.skeleton_to_boat().basis if actor.has_method("skeleton_to_boat") else actor.global_basis.inverse()*sk.global_basis
 		var axis := Vector3.UP.cross(pose.basis.z).normalized()
 		transform.basis=to_boat.inverse()*Basis(axis,lean)*to_boat*transform.basis
 		sk.set_bone_global_pose(spine,transform)
 		sk.force_update_bone_child_transform(spine)
-	var conversion: Transform3D=actor.global_transform.affine_inverse()*sk.global_transform
+	var conversion: Transform3D=actor.skeleton_to_boat() if actor.has_method("skeleton_to_boat") else actor.global_transform.affine_inverse()*sk.global_transform
 	var inverse := conversion.affine_inverse()
 	var withdraw := smoothstep(0,.12,u)
 	var insert := smoothstep(.88,1,u)

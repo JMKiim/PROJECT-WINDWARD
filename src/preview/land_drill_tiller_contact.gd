@@ -137,7 +137,7 @@ static func settle(actor: Node3D) -> Dictionary:
 			guide=joint+axis*original.distance_to(joint)
 	var shared: Dictionary=_shared_plan(actor,side,guide,held,s,e,w)
 	if shared.valid:
-		var conversion: Transform3D=actor.global_transform.affine_inverse()*skeleton.global_transform
+		var conversion: Transform3D=actor.skeleton_to_boat() if actor.has_method("skeleton_to_boat") else actor.global_transform.affine_inverse()*skeleton.global_transform
 		var inverse := conversion.affine_inverse()
 		LIMB.solve(skeleton,upper,lower,hand,inverse*shared.wrist,inverse*shared.elbow)
 		var result: Transform3D=skeleton.get_bone_global_pose(hand)

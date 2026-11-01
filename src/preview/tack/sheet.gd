@@ -2,6 +2,9 @@ extends "res://src/preview/land_drill_cockpit_sheet.gd"
 ## Finalized hands are inputs. This display never changes a bone or ledger.
 var maneuver: RefCounted
 var display_budget := NAN
+var sailing_display_budget_active := false
+var last_floor_mode := -1
+var sailing_pile_span := 0.0
 var floor_cap_signature := []
 var floor_caps := []
 var floor_polygon := PackedVector2Array()
@@ -63,11 +66,19 @@ func adopt(source: RefCounted,controller: RefCounted) -> void:
 	end_shape=source.end_shape
 	end_path=source.end_path
 	maneuver=controller
+	var low: Vector3=ground[0]
+	var high: Vector3=ground[0]
+	for point in ground:
+		low=low.min(point); high=high.max(point)
+	sailing_pile_span=(high-low).length()
 func crossing() -> bool: return maneuver!=null and maneuver.phase=="CROSS"
 func _retained_entry() -> bool:
 	return maneuver!=null and maneuver.phase=="ENTRY" and maneuver.has_method("entry_sheet_prefix") and maneuver.is_gybe()
 func build(cockpit_metres: float) -> Dictionary:
-	var desired := display_budget if crossing() and is_finite(display_budget) else cockpit_metres
+	var mode := int(crossing())*2+int(sailing_display_budget_active)
+	if mode!=last_floor_mode:
+		last_signature.clear(); last_floor_mode=mode
+	var desired := display_budget if (crossing() or sailing_display_budget_active) and is_finite(display_budget) else cockpit_metres
 	var result: Dictionary=super.build(desired)
 	if result.get("valid",false):
 		result.logical_cockpit_metres=cockpit_metres
@@ -144,25 +155,55 @@ func _touch_point(outlet: Vector3) -> Vector3:
 	var xz := CORRIDOR.outside(Vector2(point.x,point.z),floor_polygon)
 	return Vector3(xz.x,hull.cockpit_floor_y_at(xz.x,xz.y)+RADIUS+.002,xz.y)
 func _surface_line(a: Vector3,b: Vector3) -> PackedVector3Array:
-	if not crossing(): return super._surface_line(a,b)
+	if not crossing():
+		if not sailing_display_budget_active: return super._surface_line(a,b)
+		# Keep the original8mm sampling bound,using the entire stored pile
+		# extent. Do not change subdivision count as the inverse moves its
+		# endpoint:ceil(distance/8mm) makes the rendered arc discontinuous.
+		var count := maxi(2,ceili((a.distance_to(ground[0])+sailing_pile_span)/.008))
+		var path := PackedVector3Array()
+		for index in count+1:
+			var point := a.lerp(b,index/float(count))
+			point.y=maxf(point.y,hull.cockpit_floor_y_at(point.x,point.z)+RADIUS+.002)
+			path.append(point)
+		return path
 	_prepare_floor()
 	return actual_corridor.path(a,b)
 func _needed_floor(touch: Vector3,coordinate: float) -> Dictionary:
 	floor_evaluations+=1
 	var sample := _at(coordinate)
+	if not crossing():
+		# Invert the actual rendered surface-to-pile join. The old
+		# coordinate+surface estimate omits a lifted partial pile segment
+		# and can jump in length when the selected stored vertex changes.
+		var surface: Dictionary=_measure_surface_line(touch,sample.point)
+		return {"sample":sample,"length":arc[sample.index]+surface.end.distance_to(ground[sample.index])+surface.length}
 	_prepare_floor()
 	var surface: Dictionary=actual_corridor.measure(touch,sample.point)
 	var raised: Vector3=surface.end
 	# The rendered surface line lifts an interpolated pile point. Include
 	# that actual join,not the unlifted partial arc used by the old inverse.
 	return {"sample":sample,"length":arc[sample.index]+raised.distance_to(ground[sample.index])+surface.length}
+func _measure_surface_line(a: Vector3,b: Vector3) -> Dictionary:
+	# The inverse needs only length/end,not an allocated render path.
+	# Use the identical points and accumulation order as _surface_line.
+	var extent: float=a.distance_to(ground[0])+sailing_pile_span if sailing_display_budget_active else a.distance_to(b)
+	var count := maxi(2,ceili(extent/.008))
+	var previous := Vector3.ZERO
+	var length := 0.0
+	for index in count+1:
+		var point := a.lerp(b,index/float(count))
+		point.y=maxf(point.y,hull.cockpit_floor_y_at(point.x,point.z)+RADIUS+.002)
+		if index>0: length+=previous.distance_to(point)
+		previous=point
+	return {"length":length,"end":previous}
 func _floor_parameter(touch: Vector3,available: float) -> Dictionary:
 	var started := Time.get_ticks_usec()
 	var result := _floor_parameter_impl(touch,available)
 	floor_ms+=(Time.get_ticks_usec()-started)/1000.0
 	return result
 func _floor_parameter_impl(touch: Vector3,available: float) -> Dictionary:
-	if not crossing(): return super._floor_parameter(touch,available)
+	if not crossing() and not sailing_display_budget_active: return super._floor_parameter(touch,available)
 	var low := 0.0
 	var high: float=minf(arc[-1],available)
 	var below: float=_needed_floor(touch,low).length-available

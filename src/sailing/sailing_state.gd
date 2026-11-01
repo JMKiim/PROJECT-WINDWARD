@@ -1,6 +1,8 @@
 class_name SailingState
 extends RefCounted
 
+const PRESSURE := preload("res://src/sailing/sail_pressure.gd")
+
 const HEAD_TO_WIND_ZERO_DRIVE_DEGREES := 20.0
 const CLOSE_HAULED_REFERENCE_DEGREES := 42.0
 const MAX_SHEET_RATE := 0.45
@@ -10,6 +12,20 @@ const BOOM_DAMPING := 5.8
 const MAX_BOOM_SPEED := deg_to_rad(260.0)
 const LATERAL_LINEAR_DRAG := 2.4
 const LATERAL_QUADRATIC_DRAG := 1.1
+# Nominal dry boat58kg plus assumed crew75kg;not measured all-up mass.
+const BASE_MASS_KG := 58.0
+const REFERENCE_DISPLACEMENT_MASS_KG := 133.0
+# Effective foil speed scale,not an identified daggerboard lift coefficient.
+const FOIL_RESPONSE_SPEED_MPS := 3.0
+# Effective depowered-rig windage coefficient rho*Cd*A/(2*mass),in1/m.
+# This small aggregate is not a measured ILCA sail-pressure calibration.
+const LUFFING_AIR_DRAG_PER_MASS := .001
+const REVERSE_LINEAR_DRAG := .20
+const REVERSE_QUADRATIC_DRAG := .15
+# Installed-sail resistance uses relative-water speed squared. Preserve the
+# old law's force at the existing3m/s reference,not its unmeasured low-speed
+# fractional brake. This is an effective coefficient,not hull tow-test data.
+const INSTALLED_REVERSE_QUADRATIC_DRAG := REVERSE_QUADRATIC_DRAG+REVERSE_LINEAR_DRAG/FOIL_RESPONSE_SPEED_MPS
 
 var heading_radians: float = 0.0
 var speed_mps: float = 0.0
@@ -21,6 +37,21 @@ var boom_angular_velocity := 0.0
 var water_relative_velocity := Vector3.ZERO
 var fixed_boom_side := 0.0
 var geometric_boom_limit_radians := -1.0
+var installed_boom_yaw_radians := NAN
+var sail_chord_boat := Vector3.ZERO
+var sail_span_boat := Vector3.ZERO
+var sail_frame_active := false
+var sail_pressure := PRESSURE.new()
+var sail_attitude_basis := Basis.IDENTITY
+var displacement_mass_kg := REFERENCE_DISPLACEMENT_MASS_KG
+var sail_lateral_force_n := 0.0
+var lateral_water_force_n := 0.0
+var lateral_hull_force_n := 0.0
+var lateral_foil_force_n := 0.0
+var sail_forward_force_n := 0.0
+var aggregate_forward_force_n := 0.0
+var axial_air_force_n := 0.0
+var reverse_water_force_n := 0.0
 
 var _boom_side := 1.0
 var _water_velocity_initialized := false
@@ -34,18 +65,15 @@ func step(delta: float, command: SailingCommand) -> void:
 		1.0
 	)
 
-	var forward_before_turn := forward_vector()
-	var through_water_forward_speed := maxf(
-		0.0,
-		water_relative_velocity.dot(forward_before_turn)
-	)
-	var steering_authority := clampf(through_water_forward_speed / 3.0, 0.0, 1.0)
+	var steering_authority := rudder_authority()
 	heading_radians = wrapf(
 		heading_radians - command.rudder * MAX_TURN_RATE * steering_authority * delta,
 		-PI,
 		PI
 	)
 
+	if sail_frame_active:
+		sail_pressure.advance(delta,sail_chord_boat,sail_span_boat,heading_radians,apparent_wind_velocity(),sail_attitude_basis)
 	var target_speed := _calculate_target_speed()
 	if target_speed > speed_mps:
 		speed_mps = move_toward(speed_mps, target_speed, 0.65 * delta)
@@ -54,12 +82,19 @@ func step(delta: float, command: SailingCommand) -> void:
 		# slows progressively from hydrodynamic drag instead of hitting a brake.
 		var drag_rate := 0.11 + speed_mps * speed_mps * 0.024
 		speed_mps = maxf(target_speed, speed_mps - drag_rate * delta)
-	_update_water_relative_velocity(delta)
+	_update_water_relative_velocity(delta,target_speed)
 	_update_boom(delta)
 
 
 func forward_vector() -> Vector3:
 	return Vector3(-sin(heading_radians), 0.0, -cos(heading_radians))
+
+
+func set_sail_frame(chord: Vector3,span: Vector3) -> bool:
+	sail_frame_active=chord.is_finite() and span.is_finite() and chord.cross(span).length_squared()>.000001
+	sail_chord_boat=chord.normalized() if sail_frame_active else Vector3.ZERO
+	sail_span_boat=span.normalized() if sail_frame_active else Vector3.ZERO
+	return sail_frame_active
 
 
 func velocity_vector() -> Vector3:
@@ -69,6 +104,53 @@ func velocity_vector() -> Vector3:
 func water_velocity_vector() -> Vector3:
 	_initialize_water_velocity_from_legacy_speed()
 	return water_relative_velocity
+
+
+func forward_water_speed_mps() -> float:
+	return water_velocity_vector().dot(forward_vector())
+
+
+func lateral_water_speed_mps() -> float:
+	var forward := forward_vector()
+	return water_velocity_vector().dot(Vector3(-forward.z,0,forward.x))
+
+
+func leeway_degrees() -> float:
+	# Signed keel-line drift angle;abs(forward) also describes sternway.
+	if water_velocity_vector().length_squared()<.00000001: return 0.0
+	return rad_to_deg(atan2(lateral_water_speed_mps(),absf(forward_water_speed_mps())))
+
+
+func rudder_authority() -> float:
+	# The same physical blade produces the opposite yaw with sternway.
+	# Ground/current speed is not water flow over the rudder.
+	return clampf(forward_water_speed_mps()/3.0,-1.0,1.0)
+
+
+func luffing_air_acceleration() -> Vector3:
+	var weight := 1.0-smoothstep(HEAD_TO_WIND_ZERO_DRIVE_DEGREES,CLOSE_HAULED_REFERENCE_DEGREES,wind_angle_degrees())
+	var air := apparent_wind_velocity()
+	air.y=0
+	var acceleration := air*air.length()*LUFFING_AIR_DRAG_PER_MASS*weight
+	# With an installed sail,the pressure owns transverse air force. Retain
+	# only this legacy depowered model's longitudinal backing contribution.
+	return forward_vector()*acceleration.dot(forward_vector()) if sail_frame_active else acceleration
+
+
+func axial_air_acceleration() -> Vector3:
+	var legacy := luffing_air_acceleration()
+	var forward := forward_vector()
+	var mass := maxf(displacement_mass_kg,1.0)
+	aggregate_forward_force_n=legacy.dot(forward)*mass
+	sail_forward_force_n=sail_pressure.force_world_newtons().dot(forward) if sail_frame_active else 0.0
+	axial_air_force_n=aggregate_forward_force_n
+	if sail_frame_active and sail_forward_force_n<0:
+		# The aggregate already includes depowered sail windage. Replace its
+		# overlapping backward estimate when the actual plane predicts more;
+		# do not add both forces or invent a separately calibrated bare hull.
+		axial_air_force_n=minf(aggregate_forward_force_n,sail_forward_force_n)
+		return forward*axial_air_force_n/mass
+	return legacy
 
 
 func ground_velocity_vector() -> Vector3:
@@ -102,6 +184,11 @@ func boom_angle_degrees() -> float:
 
 
 func _update_boom(delta: float) -> void:
+	# The installed display has already integrated its one boom response.
+	# Keep the sheet limit separate;do not overwrite the actual opening.
+	if is_finite(installed_boom_yaw_radians):
+		boom_angle_radians=installed_boom_yaw_radians
+		return
 	# The limited seated scene has an authoritative geometric sheet purchase.
 	# It does not opt into the legacy automatic tack/gybe side switch.
 	if fixed_boom_side!=0 and geometric_boom_limit_radians>=0:
@@ -144,12 +231,27 @@ func _initialize_water_velocity_from_legacy_speed() -> void:
 	_water_velocity_initialized = true
 
 
-func _update_water_relative_velocity(delta: float) -> void:
+func _update_water_relative_velocity(delta: float,target_speed: float) -> void:
+	# Installed sail and aggregate sample the same pre-integration air flow.
+	var air_acceleration := axial_air_acceleration() if sail_frame_active else Vector3.ZERO
 	var forward := forward_vector()
 	var right := Vector3(-forward.z, 0.0, forward.x)
 	var forward_speed := water_relative_velocity.dot(forward)
 	var lateral_speed := water_relative_velocity.dot(right)
-	forward_speed = move_toward(forward_speed, speed_mps, 1.35 * delta)
+	reverse_water_force_n=0
+	if forward_speed<0:
+		# Retain signed momentum instead of pulling sternway toward the
+		# legacy nonnegative HUD speed at1.35m/s². Water drag dissipates it;
+		# available sail drive can then establish forward way continuously.
+		if sail_frame_active:
+			forward_speed=_advance_sternway(delta,forward_speed)
+		else:
+			var resistance := absf(forward_speed)*REVERSE_LINEAR_DRAG+forward_speed*forward_speed*REVERSE_QUADRATIC_DRAG
+			forward_speed=move_toward(forward_speed,0,resistance*delta)
+		var available := clampf(target_speed/maxf(true_wind_velocity.length()*.72,.0001),0,1)
+		forward_speed+=.65*available*delta
+	else:
+		forward_speed = move_toward(forward_speed, speed_mps, 1.35 * delta)
 	var lateral_drag := (
 		lateral_speed * LATERAL_LINEAR_DRAG
 		+ lateral_speed * absf(lateral_speed) * LATERAL_QUADRATIC_DRAG
@@ -159,11 +261,52 @@ func _update_water_relative_velocity(delta: float) -> void:
 		0.0,
 		absf(lateral_drag) * delta
 	)
+	sail_lateral_force_n=0; lateral_water_force_n=0
+	lateral_hull_force_n=0; lateral_foil_force_n=0
+	if sail_frame_active:
+		new_lateral_speed=_advance_lateral_speed(delta,forward_speed,lateral_speed,right)
 	water_relative_velocity = (
 		forward * forward_speed
 		+ right * new_lateral_speed
 	)
+	# Actual negative sail load/overlapping windage supplies real sternway.
+	# No minimum speed,yaw impulse,escape timer or input-triggered boost.
+	if not sail_frame_active: air_acceleration=axial_air_acceleration()
+	water_relative_velocity+=air_acceleration*delta
 	speed_mps = maxf(0.0, water_relative_velocity.dot(forward))
+
+
+func _advance_sternway(delta: float,velocity: float) -> float:
+	var coefficient := REFERENCE_DISPLACEMENT_MASS_KG*INSTALLED_REVERSE_QUADRATIC_DRAG
+	var a := delta*coefficient/maxf(displacement_mass_kg,1.0)
+	# Backward Euler: magnitude+dt*C*magnitude²/mass=old magnitude.
+	# The rationalized root dissipates without reversing passive motion.
+	var result := -2*absf(velocity)/(1+sqrt(1+4*a*absf(velocity)))
+	reverse_water_force_n=coefficient*result*result
+	return result
+
+
+func _advance_lateral_speed(delta: float,forward_speed: float,lateral_speed: float,right: Vector3) -> float:
+	sail_lateral_force_n=sail_pressure.force_world_newtons().dot(right)
+	# Hull/crossflow damping remains at low speed. A foil-like term grows
+	# with signed-flow magnitude and its horizontal normal projection².
+	# This is an effective resistance,not foil geometry or measured CL.
+	var projection := (sail_attitude_basis*Vector3.RIGHT).dot(Vector3.RIGHT)
+	var linear := REFERENCE_DISPLACEMENT_MASS_KG*LATERAL_LINEAR_DRAG*(1+absf(forward_speed)/FOIL_RESPONSE_SPEED_MPS*projection*projection)
+	var quadratic := REFERENCE_DISPLACEMENT_MASS_KG*LATERAL_QUADRATIC_DRAG
+	var mass := maxf(displacement_mass_kg,1.0)
+	# Backward Euler solves v+dt*(k*v+c*abs(v)*v)/m=v0+dt*F/m.
+	# Rationalized quadratic root is finite at zero and does not flip a
+	# passive drift by overdamping it across zero on a long frame.
+	var target := lateral_speed+delta*sail_lateral_force_n/mass
+	var b := 1+delta*linear/mass
+	var a := delta*quadratic/mass
+	var speed := signf(target)*2*absf(target)/(b+sqrt(b*b+4*a*absf(target)))
+	lateral_water_force_n=-linear*speed-quadratic*absf(speed)*speed
+	# Split the already-applied force,without changing velocity integration.
+	lateral_hull_force_n=-REFERENCE_DISPLACEMENT_MASS_KG*LATERAL_LINEAR_DRAG*speed-quadratic*absf(speed)*speed
+	lateral_foil_force_n=lateral_water_force_n-lateral_hull_force_n
+	return speed
 
 
 func _calculate_target_speed() -> float:
@@ -183,6 +326,9 @@ func _calculate_target_speed() -> float:
 	else:
 		polar_efficiency = remap(angle, 100.0, 180.0, 1.0, 0.72)
 
+	if sail_frame_active:
+		return true_wind_velocity.length()*.72*polar_efficiency*sail_pressure.speed_factor(true_wind_velocity.length())
+	# Legacy callers without an installed sail frame retain their old model.
 	var trim_error := absf(sheet_position - optimal_sheet_position())
 	var trim_efficiency := 1.0 - clampf(trim_error / 0.65, 0.0, 1.0)
 	return true_wind_velocity.length() * 0.72 * polar_efficiency * lerpf(0.2, 1.0, trim_efficiency)

@@ -75,7 +75,11 @@ static func sail_frame(yaw: float,local_head: Vector3) -> Transform3D:
 func synchronize(yaw: float) -> void:
 	if cloth==null: return
 	cloth.transform=sail_frame(yaw,cloth.luff_boundary_point(1))
-	var point: Vector3=cloth.to_local(eye.global_position)
+	# Both branches belong to the same rig. Compose their real local
+	# hierarchy,not a world-position round trip that loses micrometres as
+	# the boat travels and rebuilds identical cloth on every yaw sample.
+	var eye_to_rig: Transform3D=rig.boom_pivot.transform*strap.transform*eye.transform
+	var point: Vector3=cloth.transform.affine_inverse()*(transform.affine_inverse()*eye_to_rig.origin)
 	# At fixed pitch the sail only turns around the mast. Do not rebuild the
 	# same cloth/pockets/three battens for float-noise in a yaw round trip.
 	if point.distance_to(last_local_clew)>.000002:

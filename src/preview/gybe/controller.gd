@@ -7,6 +7,9 @@ var trim_low := 0.0
 var trim_at_cross := 0.0
 var pull_entry := {}
 var entry_contact := {}
+# The stationary drill keeps its distance cue. Sailing uses explicit
+# confirmation without treating a practice distance as a physical law.
+var practice_cues := true
 func is_gybe() -> bool: return gybing
 func action_name() -> String: return "자이빙" if gybing else "태킹"
 func manual_trim_stage() -> bool: return phase in ["TRIM","EASE"]
@@ -16,7 +19,7 @@ func request() -> bool:
 	return super.request()
 func request_gybe() -> bool:
 	if phase=="TRIM":
-		if lab.session.wheel_pull.metres-trim_low<PRACTICE_PULL_METRES-.000001:
+		if practice_cues and lab.session.wheel_pull.metres-trim_low<PRACTICE_PULL_METRES-.000001:
 			lab.session.notice="자이빙 준비 · W/휠↓로 약30cm 당긴 뒤 G로 붐을 넘겨 주세요. 필요하면 S로 먼저 풀 수 있어요."
 			return false
 		phase="IDLE"
@@ -26,7 +29,7 @@ func request_gybe() -> bool:
 		lab.session.notice="자이빙 · 당긴 시트를 지지하며 몸과 붐 전환으로 이어가요."
 		return true
 	if phase=="EASE":
-		if trim_at_cross-lab.session.wheel_pull.metres<PRACTICE_PULL_METRES-.000001:
+		if practice_cues and trim_at_cross-lab.session.wheel_pull.metres<PRACTICE_PULL_METRES-.000001:
 			lab.session.notice="새 현에서 S/휠↑로 약30cm 풀고 G로 연습을 마쳐 주세요."
 			return false
 		lab.session.wheel_pull.pause()
@@ -67,6 +70,7 @@ func advance(delta: float) -> void:
 		_trim_notice()
 	else: lab.session.notice=lab.session.notice.replace("태킹","자이빙")
 func _try_pull_entry() -> void:
+	if lab.rig_display.has_method("maneuver_entry_ready") and not lab.rig_display.maneuver_entry_ready(): return
 	if not PULL_ENTRY.ready(actor,lab.session.wheel_pull): return
 	pull_entry=PULL_ENTRY.retain(actor)
 	PULL_ENTRY.park(lab.session.wheel_pull)
@@ -93,6 +97,9 @@ func entry_sheet_prefix() -> Dictionary:
 	if phase!="ENTRY" or pull_entry.is_empty(): return {}
 	return PULL_ENTRY.prefix(actor,pull_entry,smoothstep(0,PULL_ENTRY.SECONDS,bridge_time))
 func _trim_notice() -> void:
+	if not practice_cues:
+		lab.session.notice="자이빙 준비 · W/S·휠로 시트 조절 · G 전환 확정 · A/D 풍하 통과 · Backspace 종료" if phase=="TRIM" else "자이빙 도착 · W/S·휠로 시트 조절 · G 마감 · Backspace 종료"
+		return
 	var metres: float=lab.session.wheel_pull.metres
 	if phase=="TRIM":
 		var pull: float=maxf(0,metres-trim_low)

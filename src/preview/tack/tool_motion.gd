@@ -103,7 +103,7 @@ func route_at(joint: Vector3,u: float,turn: float) -> Dictionary:
 	return SHAFT.sample(body,joint,u,turn,actor)
 func _apply_arm(side: String,plan: Dictionary) -> void:
 	var sk: Skeleton3D=actor.skeleton
-	var conversion: Transform3D=actor.global_transform.affine_inverse()*sk.global_transform
+	var conversion: Transform3D=actor.skeleton_to_boat() if actor.has_method("skeleton_to_boat") else actor.global_transform.affine_inverse()*sk.global_transform
 	var inverse := conversion.affine_inverse()
 	var upper := sk.find_bone(side+"UpperArm")
 	var lower := sk.find_bone(side+"LowerArm")

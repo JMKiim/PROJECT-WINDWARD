@@ -41,3 +41,17 @@ func _ready() -> void:
 	set_amount(0)
 
 func _new_sheet_control() -> Node: return DIRECT_CONTROL.new()
+
+func skeleton_to_boat() -> Transform3D:
+	# Compose the actual local hierarchy, not inverse(world)*world. The latter
+	# loses micrometres once the sailing hull is tens of metres from the origin.
+	# This frame includes the live Pose placement and the imported rig scale.
+	var relative := Transform3D.IDENTITY
+	var node: Node=skeleton
+	while node!=self:
+		if node is Node3D: relative=node.transform*relative
+		node=node.get_parent()
+	return relative
+
+func bone_pose_boat(name: String) -> Transform3D:
+	return skeleton_to_boat()*skeleton.get_bone_global_pose(skeleton.find_bone(name))

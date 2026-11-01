@@ -90,6 +90,7 @@ const ROLL_STIFFNESS := 25.0
 const ROLL_DAMPING := 10.0
 const MAX_PITCH_ANGLE := deg_to_rad(9.0)
 const MAX_ROLL_ANGLE := deg_to_rad(14.0)
+const SAILING_HEEL := preload("res://src/sailing/sailing_heel.gd")
 
 enum TillerExtensionPairMode {
 	NONE,
@@ -114,6 +115,8 @@ var seated_controls: Node3D
 @onready var sailing_environment: SailingEnvironment = get_node_or_null(environment_path) as SailingEnvironment
 
 var sailing_state := SailingState.new()
+var sailing_heel := SAILING_HEEL.new()
+@export_range(35.0,130.0,1.0) var crew_mass_kg := 75.0
 var sailing_command := SailingCommand.new()
 var _body_pose_search_cursors: Dictionary = {}
 var _body_pose_skip_direct: Dictionary = {}
@@ -198,9 +201,11 @@ func _physics_process(delta: float) -> void:
 	sailing_command.rudder = Input.get_axis("steer_port", "steer_starboard")
 	sailing_command.sheet_delta = Input.get_axis("sheet_in", "sheet_out")
 	if seated_controls!=null:
+		sailing_state.sail_attitude_basis=Basis(wave_attitude_quaternion())
+		sailing_state.displacement_mass_kg=SailingState.BASE_MASS_KG+crew_mass_kg
 		seated_controls.advance_controls(delta,sailing_command.rudder,sailing_command.sheet_delta)
 		if not seated_controls.valid: return
-		_effective_sailing_command.rudder = seated_controls.deck.actor.rudder_angle()/MAX_RUDDER_VISUAL_ANGLE
+		_effective_sailing_command.rudder = seated_controls.rudder_command(delta)
 		_effective_sailing_command.sheet_delta = 0
 		sailing_state.step(delta,_effective_sailing_command)
 		seated_controls.guard_course()
@@ -242,13 +247,28 @@ func wave_attitude_quaternion(gain: float = 1.0) -> Quaternion:
 	var clamped_gain := clampf(gain, 0.0, 1.0)
 	return (
 		Quaternion(Vector3.RIGHT, _wave_pitch * clamped_gain)
-		* Quaternion(Vector3.BACK, _wave_roll * clamped_gain)
+		# Camera wave attenuation must not hide persistent load/crew heel.
+		* Quaternion(Vector3.BACK, clampf(_wave_roll * clamped_gain+sailing_heel.angle,-MAX_ROLL_ANGLE,MAX_ROLL_ANGLE))
 	).normalized()
+
+
+func sailing_roll_degrees() -> float:
+	return rad_to_deg(clampf(_wave_roll+sailing_heel.angle,-MAX_ROLL_ANGLE,MAX_ROLL_ANGLE))
+
+
+func _advance_sailing_heel(delta: float) -> void:
+	if seated_controls==null or not seated_controls.valid: return
+	sailing_heel.crew_mass_kg=crew_mass_kg
+	var frame := Basis(Vector3.UP,sailing_state.heading_radians)*sailing_state.sail_attitude_basis
+	var water_moment: float=seated_controls.water_reaction_moment(frame)
+	if not sailing_heel.advance(delta,frame,sailing_state.sail_pressure,seated_controls.sail_center_boat,seated_controls.crew_center_boat,MAX_ROLL_ANGLE,water_moment):
+		push_error("Sailing stopped: invalid heel inputs")
 
 
 func _update_water_pose(delta: float) -> void:
 	if not sailing_environment:
-		rotation = Vector3(0.0, sailing_state.heading_radians, 0.0)
+		_advance_sailing_heel(delta)
+		quaternion=Quaternion(Vector3.UP,sailing_state.heading_radians)*Quaternion(Vector3.BACK,sailing_heel.angle)
 		return
 	var yaw_basis := Basis(Vector3.UP, sailing_state.heading_radians)
 	var forward := yaw_basis * Vector3.FORWARD
@@ -318,6 +338,7 @@ func _update_water_pose(delta: float) -> void:
 		MAX_ROLL_ANGLE
 	)
 	global_position.y = _heave_position
+	_advance_sailing_heel(delta)
 	quaternion = (
 		Quaternion(Vector3.UP, sailing_state.heading_radians)
 		* wave_attitude_quaternion()

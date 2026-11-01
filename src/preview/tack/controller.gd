@@ -41,6 +41,9 @@ var bridge_time := 0.0
 var bridge_data := {}
 var bridge_steering := INF
 var record_geometry_trace := false
+# Optional external sailing gate in the same normalized clock. The stationary
+# drill leaves this unset; steering still advances while the crossing waits.
+var clock_limit := NAN
 func setup(value: Node3D) -> bool:
 	lab=value
 	actor=lab.actor
@@ -82,6 +85,7 @@ func advance(delta: float) -> void:
 		actor.set_look(lab.look_yaw,lab.look_pitch)
 		var wheel: RefCounted=lab.session.wheel_pull
 		if gaze_weight>0 or actor.hike>.000001 or actor.grip_phase!="HOLD" or wheel.state!="REST" or absf(wheel.work-.5)>.000001 or actor.sheet_control.ease_relaxation>.000001: return
+		if lab.rig_display.has_method("maneuver_entry_ready") and not lab.rig_display.maneuver_entry_ready(): return
 		_begin_entry()
 		return
 	if phase=="POST":
@@ -110,7 +114,10 @@ func advance(delta: float) -> void:
 		return
 	if phase!="CROSS": return
 	steering=move_toward(steering,steering_target,minf(delta,.1)*1.5)
-	clock_progress=move_toward(clock_progress,1.0 if source_side==-1 else 0.0,minf(delta,.1)/DURATION)
+	var destination := 1.0 if source_side==-1 else 0.0
+	if is_finite(clock_limit):
+		destination=maxf(clock_progress,clock_limit) if source_side==-1 else minf(clock_progress,clock_limit)
+	clock_progress=move_toward(clock_progress,destination,minf(delta,.1)/DURATION)
 	compose()
 	if source_side==-1 and clock_progress>=1 or source_side==1 and clock_progress<=0: finish()
 func _begin_entry() -> void:
@@ -203,6 +210,7 @@ func compose_bridge() -> void:
 	actor.amount=-actor.seat_side*steering
 	actor.steering_target=-actor.seat_side*steering_target
 func cancel() -> void:
+	clock_limit=NAN
 	phase="IDLE"
 	gaze_weight=1
 	gaze_time=0
