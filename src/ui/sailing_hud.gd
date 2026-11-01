@@ -7,11 +7,17 @@ const MPS_TO_KNOTS := 1.943844
 @onready var boat: WindwardBoat = get_node(boat_path)
 @onready var telemetry_label: Label = $Margin/Panel/Padding/Rows/Telemetry
 @onready var camera_label: Label = $Margin/Panel/Padding/Rows/CameraMode
+var graphics_panel: CanvasLayer
+
+func _ready() -> void:
+	graphics_panel=preload("res://src/ui/graphics_panel.gd").new()
+	graphics_panel.scene=get_parent()
+	add_child(graphics_panel)
 
 
 func _process(_delta: float) -> void:
 	var state := boat.get_sailing_state()
-	telemetry_label.text = (
+	var telemetry := (
 		"대수속도  %.1f kn\n지상속도  %.1f kn\n진풍  %.1f kn\n상대풍  %.1f kn\n풍각  %.0f°\n조류  %.1f kn\n시트  %d%%\n붐  %+.0f°"
 		% [
 			state.speed_mps * MPS_TO_KNOTS,
@@ -25,6 +31,10 @@ func _process(_delta: float) -> void:
 		]
 	)
 	var camera_rig: WindwardCameraRig = boat.get_node("../CameraRig")
-	camera_label.text = "카메라  %s" % ("1인칭" if camera_rig.first_person_enabled else "탑다운")
+	var camera_text := "카메라  %s" % ("1인칭" if camera_rig.first_person_enabled else "탑다운")
 	if boat.seated_controls!=null:
-		camera_label.text += "\n"+boat.seated_controls.status_text()
+		camera_text += "\n"+boat.seated_controls.status_text()
+	# Do not dirty text shaping/layout with an intermediate camera-only label
+	# or rewrite a rounded readout that has not actually changed.
+	if telemetry_label.text!=telemetry: telemetry_label.text=telemetry
+	if camera_label.text!=camera_text: camera_label.text=camera_text
